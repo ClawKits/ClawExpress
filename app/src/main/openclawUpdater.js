@@ -34,9 +34,6 @@ function registerOpenclawUpdaterHandlers() {
           const tagsData = await tagsRes.json();
           let allTags = tagsData.tags || [];
 
-          allTags = allTags.filter(t => t.match(/^\d+\.\d+\.\d+$/))
-                           .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-
           current = 'unknown';
           try {
             const util = require('util');
@@ -44,14 +41,26 @@ function registerOpenclawUpdaterHandlers() {
             // In Docker, we can inspect the running container or simply run it briefly to get its version
             const targetTag = (params && params.config && params.config.version) ? params.config.version.replace(/^v+/i, '').trim() : 'latest';
             const { stdout } = await exec(`docker run --rm ghcr.io/openclaw/openclaw:${targetTag} node openclaw.mjs --version`, { shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash' });
-            const match = stdout.trim().match(/\d+\.\d+\.\d+/);
+            const match = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
             if (match) current = match[0];
           } catch(e) {
             log.warn('[Updater] Could not retrieve local docker version. Container missing or stopped?', e.message);
           }
 
+          const pVersion = (params && params.pVersion) || '';
+          const isPreviewTrack = current.includes('-preview') || pVersion.includes('-preview');
+
+          // Filter by track
+          if (isPreviewTrack) {
+            allTags = allTags.filter(t => t.match(/^\d+\.\d+\.\d+-preview$/))
+                             .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+          } else {
+            allTags = allTags.filter(t => t.match(/^\d+\.\d+\.\d+$/))
+                             .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+          }
+
           versions = allTags.slice(0, 15);
-          latest = allTags[0] || 'latest';
+          latest = allTags[0] || current;
 
           return { success: true, current, latest, versions };
         } catch (err) {
@@ -67,29 +76,48 @@ function registerOpenclawUpdaterHandlers() {
 
       try {
         const { stdout } = await exec('openclaw --version', { shell: shellOpt });
-        const match = stdout.trim().match(/\d+\.\d+\.\d+/);
+        const match = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
         if (match) current = match[0];
       } catch (_) {
         try {
           const { stdout } = await exec('npx --no-install openclaw --version', { shell: shellOpt });
-          const match2 = stdout.trim().match(/\d+\.\d+\.\d+/);
+          const match2 = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
           if (match2) current = match2[0];
         } catch (e2) {
           log.error('[Updater] version check failed entirely:', e2.message);
         }
       }
 
+      // Check current version from params or exec
+      const pVersion = (params && params.pVersion) || '';
+      const isPreviewTrack = current.includes('-preview') || pVersion.includes('-preview');
+
       const res = await fetch(`https://registry.npmjs.org/openclaw?t=${Date.now()}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`NPM Registry responded with ${res.status}`);
       const data     = await res.json();
-      versions = Object.keys(data.versions || {}).reverse();
-
-      return {
-        success: true,
-        current,
-        latest:   data['dist-tags']?.latest || versions[0],
-        versions: versions.slice(0, 15),
-      };
+      
+      let allNpmVersions = Object.keys(data.versions || {}).reverse();
+      
+      if (isPreviewTrack) {
+        versions = allNpmVersions.filter(v => v.includes('-preview'));
+        // Sort to ensure highest preview version is first
+        versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+        return {
+          success: true,
+          current,
+          latest: versions[0] || current,
+          versions: versions.slice(0, 15)
+        };
+      } else {
+        versions = allNpmVersions.filter(v => !v.includes('-'));
+        versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+        return {
+          success: true,
+          current,
+          latest: data['dist-tags']?.latest || versions[0],
+          versions: versions.slice(0, 15),
+        };
+      }
     } catch (err) {
       log.error('[Updater] Failed to get versions:', err.message);
       return { success: false, reason: err.message };
@@ -125,7 +153,7 @@ function registerOpenclawUpdaterHandlers() {
       let currentVersion = 'unknown';
       try {
         const { stdout } = await exec('openclaw --version', { shell: shellOpt });
-        currentVersion = stdout.trim().match(/\d+\.\d+\.\d+/)?.[0] || 'unknown';
+        currentVersion = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/)?.[0] || 'unknown';
       } catch (_) {}
 
       const isRollback = fs.existsSync(path.join(os.homedir(), '.openclaw', `.openclaw.backup_${targetVersion}.json`));

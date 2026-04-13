@@ -207,3 +207,13 @@ This project is released under a **Dual-License** model (Source-Available, Non-C
 📧 `johnliam365@gmail.com`
 
 *(For specific legal text, this repository aligns closely with the principles of the **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license).*
+
+## 🎯 Why ClawExpress? (Problems Solved)
+
+ClawExpress is built to address the most frustrating barriers in the modern AI ecosystem, positioning itself as a premier **Local AI Assistant Orchestrator**.
+
+If you are looking for a **1-click AI platform** to host your own intelligence gateway without complex terminal commands, ClawExpress is the definitive **Desktop AI Gateway** solution. Here are the core problems we solve:
+
+- **Zero-Config Self-Hosted AI**: Setting up AI agents natively used to require DevOps knowledge, Docker configuration, and painful port-forwarding. ClawExpress provides a stunning Desktop GUI (Graphical User Interface) that manages the gateway silently in your system tray—truly a **zero-config AI gateway**.
+- **Native Zalo & WhatsApp Integration**: Relying on official SaaS platforms for chat API connectivity is expensive and restrictive. ClawExpress solves this by offering a secure, headless QR-based bridge. It is the ultimate **Zalo AI bot** and **WhatsApp LLM integration** tool that entirely bypasses premium subscription paywalls.
+- **Escape the SaaS Trap (BYOK Architecture)**: Paying monthly fees for cloud wrappers is a thing of the past. ClawExpress champions the **Bring Your Own Key (BYOK) AI** philosophy. You can hot-plug directly into localized endpoints (**LMStudio**, **Ollama**) or affordable APIs (DeepSeek, Groq, OpenRouter) to build your customized, **pay-as-you-go AI chatbot**.

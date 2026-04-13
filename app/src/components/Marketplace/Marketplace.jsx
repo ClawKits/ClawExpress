@@ -79,7 +79,7 @@ const Marketplace = () => {
                   {verified.map(platform => (
                     <div key={platform.id} className={styles.card} style={{ padding: 0, gap: 0, overflow: 'hidden' }}>
                       <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        {platform.id.includes('openclaw') ? <img src="./openclaw-logo.png" alt="OpenClaw" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px', boxSizing: 'border-box' }} /> : <PlatformIcon id={platform.id} size={40} />}
+                        {<PlatformIcon id={platform.id} size={40} />}
                       </div>
                       <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
                         <div className={styles.cardHeader}>
@@ -141,7 +141,7 @@ const Marketplace = () => {
                   {community.map(platform => (
                     <div key={platform.id} className={styles.card} style={{ opacity: 0.8, padding: 0, gap: 0, overflow: 'hidden' }}>
                       <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        {platform.id.includes('openclaw') ? <img src="./openclaw-logo.png" alt="OpenClaw" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px', boxSizing: 'border-box' }} /> : <PlatformIcon id={platform.id} size={40} />}
+                        {<PlatformIcon id={platform.id} size={40} />}
                       </div>
                       <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
                         <div className={styles.cardHeader}>

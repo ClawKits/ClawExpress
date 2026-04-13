@@ -25,6 +25,7 @@ npm-debug.log*
 Thumbs.db
 *.bak
 *.ps1
+*.sh
 
 # Local tool config
 .agent/
