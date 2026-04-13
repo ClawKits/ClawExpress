@@ -121,7 +121,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ClawExpress-Win
-          path: app/build-output/*.exe
+          path: build-output/*.exe
       - name: Upload Windows Assets to Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -133,7 +133,6 @@ jobs:
             $exeFile `
             build-output/latest.yml `
             --clobber
-        working-directory: app
         shell: pwsh
 
   build-mac:
@@ -169,7 +168,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ClawExpress-Mac 
-          path: app/build-output/*.dmg
+          path: build-output/*.dmg
       - name: Upload macOS Assets to Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -181,7 +180,6 @@ jobs:
               gh release upload ${{ github.ref_name }} "$f" build-output/latest-mac.yml --clobber
             fi
           done
-        working-directory: app
 
   build-linux:
     name: Build Linux
@@ -218,7 +216,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ClawExpress-Linux
-          path: app/build-output/*.AppImage
+          path: build-output/*.AppImage
       - name: Upload Linux Assets to Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -230,4 +228,3 @@ jobs:
               gh release upload ${{ github.ref_name }} "$f" build-output/latest-linux.yml --clobber
             fi
           done
-        working-directory: app
