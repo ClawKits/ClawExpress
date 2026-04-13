@@ -1,0 +1,19 @@
+# ClawExpress AI Coding Protocol
+# This file provides persistent context for Cursor, GitHub Copilot, and other agentic assistants.
+
+## 1. Project Context
+ClawExpress is a desktop app (Electron + React) that installs, monitors, and auto-updates local AI agent platforms like OpenClaw via Docker Compose or NPM. 
+It uses Cloudflare (Workers, KV, D1) as its meta-registry backend.
+
+## 2. Hard Restrictions (DO NOT VIOLATE)
+1. **Frontend Sandboxing**: `src/renderer/` is isolated. NEVER `require('fs')`, `require('child_process')`, or use any Node/OS modules here. React UI only talks to OS via rigid `ipcRenderer` channels.
+2. **Design Limits (Runway Style)**: 
+   - No drop shadows allowed (`box-shadow: none`). 
+   - Deep dark mode only (`#030303` body, `#1a1a1a` cards).
+   - Only use color for tiny 6px status dots (Run/Stop/Error), nowhere else.
+   - Typography uses DM Sans with tight line-spacing (`line-height: 1.0` or `1.3`).
+3. **Execution Safety**: Do NOT construct raw shell command strings (`exec("docker run "+ userInput)`). Use templates (YAML or JSON) and variable injections passing through a safe `spawn` wrapper. Always verify port availability before deploying.
+
+## 3. Storage Hierarchy
+- **Cloud (Read-Only to Client)**: Platform manifests (`manifest.json` dictating install steps/versions) live in Cloudflare KV.
+- **Local SQLite (State)**: The true state of the user's machines (installed paths, assigned ports, logs) lives in an SQLite `.db` maintained exclusively by the Electron Main Process.

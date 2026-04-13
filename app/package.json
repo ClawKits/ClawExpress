@@ -1,0 +1,69 @@
+{
+  "name": "app",
+  "private": true,
+  "version": "0.1.8-preview",
+  "main": "dist-electron/main/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "electron:build:win": "vite build && electron-builder --config electron-builder.yml --win --publish never",
+    "electron:build:mac": "vite build && electron-builder --config electron-builder.yml --mac --publish never",
+    "electron:build:linux": "vite build && electron-builder --config electron-builder.yml --linux --publish never",
+    "electron:build:all": "vite build && electron-builder --config electron-builder.yml --win --mac --linux --publish never",
+    "build:packed": "vite build && electron-builder --config electron-builder.yml --publish never"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron-updater": "6.8.3",
+    "form-data": "^4.0.5",
+    "i18next": "^26.0.3",
+    "node-pty": "^1.1.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-i18next": "^17.0.2",
+    "ws": "^8.20.0",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "electron": "^41.1.1",
+    "electron-builder": "^25.1.8",
+    "node-gyp": "^10.0.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "lucide-react": "^1.7.0",
+    "vite": "^8.0.1",
+    "vite-plugin-electron": "^0.29.1"
+  },
+  "overrides": {
+    "node-gyp": "^10.0.0"
+  },
+  "build": {
+    "appId": "com.clawexpress.app",
+    "productName": "ClawExpress",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ClawKits",
+        "repo": "ClawExpress"
+      }
+    ]
+  }
+}
+
+
+
+
+
+
+

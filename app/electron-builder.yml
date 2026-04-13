@@ -1,0 +1,79 @@
+appId: com.clawexpress.app
+productName: ClawExpress
+
+nativeRebuilder: "legacy"
+
+extraMetadata:
+  version: "0.1.8-preview"
+
+# Output directory for build artifacts (relative to `app/`)
+directories:
+  output: ../build-output
+  buildResources: public
+
+# Files to bundle into the app
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+  - public/**
+
+# Publish config — points to the PUBLIC release repo
+publish:
+  - provider: github
+    owner: ClawKits
+    repo: ClawExpress
+
+# ── Windows ──────────────────────────────────────────────────────────────────
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: public/logo.png
+
+nsis:
+  artifactName: "ClawExpress-${version}-Windows-x64-Setup.${ext}"
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: ClawExpress
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+mac:
+  artifactName: "ClawExpress-${version}-macOS-${arch}.${ext}"
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: public/logo.png
+  category: public.app-category.developer-tools
+  # No signing — users run xattr -cr to bypass Gatekeeper
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+
+dmg:
+  title: ClawExpress
+  iconSize: 80
+
+# ── Linux ─────────────────────────────────────────────────────────────────────
+linux:
+  artifactName: "ClawExpress-${version}-Linux-x64.${ext}"
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  icon: public/logo.png
+  category: Development
+  maintainer: ClawKits <hello@clawexpress.com>
+
+
+
+
+
+
+

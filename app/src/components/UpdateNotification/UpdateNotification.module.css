@@ -1,0 +1,171 @@
+/* ── UpdateNotification ── floating bottom-right panel ───────────────────── */
+
+.container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  width: 320px;
+  background: rgba(22, 22, 34, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.04) inset;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+
+/* Header row */
+.header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.iconWrap {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.iconAccent { color: #e63946; }
+.iconGreen  { color: #22c55e; }
+.iconBlue   { color: #3b82f6; }
+.iconRed    { color: #ef4444; }
+
+.titleArea {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f0f0f8;
+  line-height: 1.3;
+}
+
+.notes {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #7878a0;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.errorText {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #ef4444;
+  line-height: 1.4;
+}
+
+.dismiss {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #55556a;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+.dismiss:hover { color: #f0f0f8; }
+
+/* Progress bar */
+.progressWrap {
+  position: relative;
+  height: 6px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 99px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.progressBar {
+  height: 100%;
+  background: linear-gradient(90deg, #e63946, #ff6b7a);
+  border-radius: 99px;
+  transition: width 0.3s ease;
+  box-shadow: 0 0 8px rgba(230, 57, 70, 0.5);
+}
+
+.progressLabel {
+  position: absolute;
+  right: 0;
+  font-size: 10px;
+  color: #55556a;
+  transform: translateY(-110%);
+}
+
+/* Action buttons */
+.actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.btnPrimary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: #e63946;
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.btnPrimary:hover {
+  background: #c1121f;
+  box-shadow: 0 0 16px rgba(230, 57, 70, 0.4);
+}
+
+.btnSecondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+.btnSecondary:hover { background: rgba(59, 130, 246, 0.25); }
+
+.btnGhost {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 10px;
+  background: transparent;
+  color: #55556a;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 7px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+.btnGhost:hover { color: #8888aa; border-color: rgba(255,255,255,0.14); }

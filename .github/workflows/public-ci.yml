@@ -1,0 +1,232 @@
+name: Open Source CI/CD
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'v*-preview'
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-release:
+    name: Prepare Release Draft
+    if: github.repository == 'ClawKits/ClawExpress'
+    runs-on: ubuntu-latest
+    outputs:
+      is_preview: ${{ steps.check_preview.outputs.is_preview }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Get version
+        id: get_version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Check if preview release
+        id: check_preview
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [[ "${{ github.ref_name }}" == *"-preview" ]]; then
+            echo "is_preview=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_preview=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release Node in Public Repo
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag -l --format='%(contents)' ${{ github.ref_name }} > notes.txt
+          cat << 'EOF' >> notes.txt
+
+          ---
+
+          ## 🍎 macOS Installation
+          
+          - 🔋 **Apple Silicon (M1/M2/M3)**: Download `...-macOS-arm64.dmg`
+          - ⚙️ **Intel Chip**: Download `...-macOS-x64.dmg`
+
+          **Note:** After downloading and installing, if you encounter the error **"ClawExpress is damaged and can't be opened"**, please open **Terminal** and run the following security command:
+
+          ```bash
+          xattr -cr /Applications/ClawExpress.app
+          ```
+
+          ## 💻 Windows Installation
+
+          - 🪟 **All Windows (64-bit)**: Download `...-Windows-x64-Setup.exe` and install normally.
+
+          ## 🐧 Linux Installation
+
+          - 🐧 **Linux (Ubuntu, Debian, etc)**: Download `...-Linux-x64.AppImage`, grant executable permissions, and run:
+
+          ```bash
+          chmod +x ClawExpress-*.AppImage
+          ./ClawExpress-*.AppImage
+          ```
+          EOF
+
+          PREVIEW_FLAG=""
+          if [[ "${{ steps.check_preview.outputs.is_preview }}" == "true" ]]; then
+            PREVIEW_FLAG="--prerelease"
+          fi
+
+          gh release create ${{ github.ref_name }} \
+            --title "ClawExpress ${{ steps.get_version.outputs.VERSION }}" \
+            -F notes.txt \
+            $PREVIEW_FLAG \
+            || echo "Release might already exist"
+
+  build-win:
+    name: Build Windows
+    if: github.repository == 'ClawKits/ClawExpress'
+    needs: prepare-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exclude workspace from Windows Defender
+        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+        shell: pwsh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies
+        run: npm install
+        working-directory: app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pre-cache Electron headers
+        run: npx node-gyp install --target=41.1.1 --dist-url=https://electronjs.org/headers --arch=x64
+        working-directory: app
+        timeout-minutes: 5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Windows
+        run: npm run build:packed
+        working-directory: app
+        timeout-minutes: 30
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Windows Artifact (PR Check)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClawExpress-Win
+          path: app/build-output/*.exe
+      - name: Upload Windows Assets to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exeFile = (Get-ChildItem build-output -Filter "ClawExpress*.exe" | Where-Object { $_.Name -notlike "*.blockmap" } | Select-Object -First 1).FullName
+          Write-Host "Uploading: $exeFile"
+          gh release upload ${{ github.ref_name }} `
+            $exeFile `
+            build-output/latest.yml `
+            --clobber
+        working-directory: app
+        shell: pwsh
+
+  build-mac:
+    name: Build macOS
+    if: github.repository == 'ClawKits/ClawExpress'
+    needs: prepare-release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies
+        run: |
+          rm -f package-lock.json
+          npm install
+        working-directory: app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Disable Spotlight Indexing
+        run: sudo mdutil -a -i off
+      - name: Build macOS
+        run: npm run electron:build:mac
+        working-directory: app
+        timeout-minutes: 30
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload macOS Artifact (PR Check)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClawExpress-Mac 
+          path: app/build-output/*.dmg
+      - name: Upload macOS Assets to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for f in build-output/ClawExpress*.dmg; do
+            if [ -f "$f" ]; then
+              echo "Uploading: $f"
+              gh release upload ${{ github.ref_name }} "$f" build-output/latest-mac.yml --clobber
+            fi
+          done
+        working-directory: app
+
+  build-linux:
+    name: Build Linux
+    if: github.repository == 'ClawKits/ClawExpress'
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools zip libopenal-dev
+      - name: Install npm dependencies
+        run: |
+          rm -f package-lock.json
+          npm install
+        working-directory: app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Linux
+        run: npm run electron:build:linux
+        working-directory: app
+        timeout-minutes: 30
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Linux Artifact (PR Check)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClawExpress-Linux
+          path: app/build-output/*.AppImage
+      - name: Upload Linux Assets to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for f in build-output/ClawExpress*.AppImage; do
+            if [ -f "$f" ]; then
+              echo "Uploading: $f"
+              gh release upload ${{ github.ref_name }} "$f" build-output/latest-linux.yml --clobber
+            fi
+          done
+        working-directory: app

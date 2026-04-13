@@ -1,0 +1,285 @@
+/**
+ * platformInstaller.js
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Registers the platform-install and platform-uninstall IPC handlers.
+ * Handles npm / docker / generic install methods plus config compilation.
+ */
+
+const { ipcMain, app } = require('electron');
+const { spawn } = require('child_process');
+const fs   = require('fs');
+const path = require('path');
+const log  = require('./logger');
+
+// ── Config compiler ───────────────────────────────────────────────────────────
+// Evaluates {{expr}} templates inside an install config object
+function compileTemplate(template, context) {
+  const processNode = (node) => {
+    if (typeof node === 'string') {
+      const strictMatch = node.match(/^\{\{(.+?)\}\}$/);
+      if (strictMatch) {
+        try {
+          const keys = Object.keys(context);
+          const values = Object.values(context);
+          return new Function(...keys, `return ${strictMatch[1]}`)(...values);
+        } catch { return ''; }
+      }
+      return node.replace(/\{\{(.+?)\}\}/g, (_, exp) => {
+        try {
+          const keys = Object.keys(context);
+          const values = Object.values(context);
+          return new Function(...keys, `return ${exp}`)(...values);
+        } catch { return ''; }
+      });
+    }
+    if (Array.isArray(node)) return node.map(processNode);
+    if (typeof node === 'object' && node !== null) {
+      const out = {};
+      for (const [k, v] of Object.entries(node)) {
+        const key = processNode(k);
+        if (key) out[key] = processNode(v);
+      }
+      return out;
+    }
+    return node;
+  };
+  return processNode(template);
+}
+
+// ── Finalize Config ───────────────────────────────────────────────────────────
+// Writes the compiled openclaw.json config to ~/.openclaw/ (single source of truth)
+function finalizeConfig(targetDir, config, configMapping, sendLog) {
+  if (config && configMapping) {
+    sendLog('[INFO] Compiling dynamic Global Configuration...');
+    try {
+      const os = require('os');
+      const openclawDir = path.join(os.homedir(), '.openclaw');
+      if (!fs.existsSync(openclawDir)) fs.mkdirSync(openclawDir, { recursive: true });
+      const configPath = path.join(openclawDir, 'openclaw.json');
+
+      const llm = config.llm_config || {};
+
+      let providerPrefix = llm.provider || 'openai';
+      if (providerPrefix.toLowerCase() === 'openrouter') providerPrefix = 'openrouter';
+
+      const rawModel = llm.model || '';
+      const isOpenRouter = providerPrefix === 'openrouter';
+
+      const hasProviderPrefix = rawModel.toLowerCase().startsWith(providerPrefix + '/');
+      const assembledModel = hasProviderPrefix ? rawModel : `${providerPrefix}/${rawModel}`;
+      const modelFull = isOpenRouter ? 'openrouter/auto' : assembledModel;
+
+      sendLog(`[INFO] Provider prefix: ${providerPrefix}`);
+      sendLog(`[INFO] Chosen model: ${assembledModel}`);
+
+      const dynamicEnv = config.env || {};
+      if (llm.provider && llm.key) {
+        const envKey = `${llm.provider.toUpperCase()}_API_KEY`;
+        dynamicEnv[envKey] = llm.key;
+        if (llm.baseUrl) {
+          dynamicEnv[`${llm.provider.toUpperCase()}_BASE_URL`] = llm.baseUrl;
+        }
+      }
+      if (config.telegram_token) dynamicEnv.TELEGRAM_BOT_TOKEN = config.telegram_token;
+
+      // Merge into existing config (preserve runtime fields)
+      let existing = {};
+      try {
+        if (fs.existsSync(configPath)) {
+          existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        }
+      } catch (_) {}
+
+      existing.gateway = existing.gateway || { mode: 'local' };
+      existing.env = { ...(existing.env || {}), ...dynamicEnv };
+      existing.agents = existing.agents || {};
+      existing.agents.defaults = existing.agents.defaults || {};
+      existing.agents.defaults.model = { primary: modelFull };
+      existing.plugins = existing.plugins || {};
+      existing.plugins.entries = {
+        ...(existing.plugins.entries || {}),
+        zalouser: { enabled: true },
+        whatsapp: { enabled: true },
+      };
+      existing.channels = {
+        ...(existing.channels || {}),
+        telegram: { enabled: Array.isArray(config.channels) && config.channels.includes('telegram') },
+        discord:  { enabled: Array.isArray(config.channels) && config.channels.includes('discord') },
+      };
+
+      if (llm.provider === 'custom' || llm.baseUrl) {
+        existing.models = existing.models || {};
+        existing.models.providers = existing.models.providers || {};
+        existing.models.providers.litellm = {
+          baseUrl: llm.baseUrl,
+          apiKey: '${' + `${llm.provider.toUpperCase()}_API_KEY` + '}',
+          api: 'openai-completions',
+          models: [{ id: rawModel.replace(/^(openai|litellm)\//i, ''), name: 'Custom', input: ['text'], contextWindow: 128000 }],
+        };
+        existing.agents.defaults.model.primary = `litellm/${rawModel.replace(/^(openai|litellm)\//i, '')}`;
+      }
+
+      sendLog(`[INFO] Config model: ${existing.agents.defaults.model.primary}`);
+      fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
+      fs.writeFileSync(path.join(targetDir, '.chosen-model'), assembledModel);
+      sendLog(`[SUCCESS] Configuration written to ${configPath}. Chosen model saved: ${assembledModel}`);
+    } catch (err) {
+      sendLog(`[WARN] Config compiler error: ${err.message}`);
+      log.error('[platformInstaller] Config compiler error:', err);
+    }
+  } else if (config) {
+    fs.writeFileSync(path.join(targetDir, '.openclaw.json'), JSON.stringify(config, null, 2));
+  }
+}
+
+// ── Uninstall Helper ──────────────────────────────────────────────────────────
+async function uninstallPlatform(platformId, method, container, cwd, runningProcesses) {
+  const entry = runningProcesses.get(platformId);
+  if (entry) {
+    try { entry.process.kill('SIGTERM'); } catch (_) {}
+    runningProcesses.delete(platformId);
+  }
+
+  const isWin = process.platform === 'win32';
+  if (method === 'docker') {
+    const containerName = container || `${platformId}-clawexpress`;
+    require('child_process').spawnSync('docker', ['rm', '-f', containerName]);
+  } else if (method === 'npm') {
+    const ocCmd  = isWin ? 'openclaw.cmd' : 'openclaw';
+    const npmCmd = isWin ? 'npm.cmd' : 'npm';
+    log.info('[Uninstall] Stopping and removing OpenClaw gateway daemon...');
+    require('child_process').spawnSync(ocCmd, ['gateway', 'uninstall'], { stdio: 'inherit' });
+    log.info('[Uninstall] Removing openclaw global npm package...');
+    require('child_process').spawnSync(npmCmd, ['uninstall', '-g', 'openclaw'], { stdio: 'inherit' });
+  }
+
+  if (cwd && fs.existsSync(cwd)) {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+  return { success: true };
+}
+
+// ── Register handlers ─────────────────────────────────────────────────────────
+function registerPlatformInstallerHandlers(runningProcesses) {
+  ipcMain.handle('platform-install', async (event, { platformId, method, config, configMapping, installScript }) => {
+    const sendLog = (msg) => {
+      if (event.sender && !event.sender.isDestroyed()) {
+        event.sender.send('platform-log', { platformId: `install-${platformId}`, msg });
+      }
+    };
+
+    const platformsDir = path.join(app.getPath('userData'), 'platforms');
+    const targetDir    = path.join(platformsDir, platformId);
+
+    sendLog(`[SYSTEM] Initializing installation sequence for ${platformId}...`);
+    sendLog(`[SYSTEM] Target directory: ${targetDir}`);
+    sendLog(`[SYSTEM] Selected runtime: ${method.toUpperCase()}`);
+
+    try {
+      if (!fs.existsSync(platformsDir)) fs.mkdirSync(platformsDir);
+      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+    } catch (err) {
+      sendLog(`[ERROR] Failed to create directories: ${err.message}`);
+      return { success: false, reason: err.message };
+    }
+
+    const doFinalizeConfig = () => finalizeConfig(targetDir, config, configMapping, sendLog);
+
+    return new Promise((resolve) => {
+      try {
+        const isWin = process.platform === 'win32';
+        
+        const baseEnv = { ...process.env };
+        if (process.platform === 'darwin') {
+          baseEnv.PATH = `/usr/local/bin:/opt/homebrew/bin:/opt/local/bin:${baseEnv.PATH || ''}`;
+        }
+
+        if (method === 'npm') {
+          sendLog('[INFO] NPM method selected. Installing openclaw globally...');
+          sendLog('[INFO] This may take a few minutes...');
+          const npmCmd = isWin ? 'npm.cmd' : 'npm';
+          sendLog('[CMD] npm install -g openclaw@latest');
+          
+          const npmEnv = { ...baseEnv, SHARP_IGNORE_GLOBAL_LIBVIPS: '1' };
+          const installChild = spawn(npmCmd, ['install', '-g', 'openclaw@latest'], {
+            cwd: targetDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: npmEnv,
+          });
+
+          installChild.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
+          installChild.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[WARN] ${l}`)));
+          installChild.on('error', err => {
+            sendLog(`[ERROR] Failed to start npm: ${err.message}`);
+            resolve({ success: false, reason: err.message });
+          });
+          installChild.on('close', code => {
+            if (code !== 0) {
+              sendLog(`[ERROR] openclaw install failed with exit code ${code}`);
+              resolve({ success: false, reason: `npm install exit code ${code}` });
+              return;
+            }
+            sendLog('[SUCCESS] openclaw installed globally.');
+            doFinalizeConfig();
+            const verifyCmd = isWin ? 'openclaw.cmd' : 'openclaw';
+            const verify = require('child_process').spawnSync(verifyCmd, ['--version'], { encoding: 'utf8', env: baseEnv });
+            if (verify.status === 0) {
+              sendLog(`[SUCCESS] openclaw CLI verified: ${verify.stdout.trim()}`);
+            } else {
+              sendLog('[WARN] openclaw CLI not found in PATH yet. You may need to restart your terminal or add npm global bin to PATH.');
+            }
+            resolve({ success: true, cwd: targetDir });
+          });
+          return;
+        }
+
+        if (!installScript || installScript.length === 0) {
+          sendLog('[INFO] No installation script provided by Cloud Registry, keeping empty directory...');
+          doFinalizeConfig();
+          resolve({ success: true, cwd: targetDir });
+          return;
+        }
+
+        let cmd = installScript[0];
+        if (isWin && (cmd === 'npm' || cmd === 'npx' || cmd === 'docker')) {
+          if (cmd === 'npm' || cmd === 'npx') cmd += '.cmd';
+        }
+        const args = installScript.slice(1);
+        sendLog(`[INFO] Executing: ${cmd} ${args.join(' ')}`);
+
+        const child = spawn(cmd, args, { 
+          cwd: targetDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: baseEnv
+        });
+        child.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
+        child.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[WARN] ${l}`)));
+        child.on('error', err => {
+          sendLog(`[ERROR] Failed to start command: ${err.message}`);
+          resolve({ success: false, reason: err.message });
+        });
+        child.on('close', code => {
+          if (code === 0) {
+            sendLog('[SUCCESS] Execution completed successfully.');
+            doFinalizeConfig();
+            resolve({ success: true, cwd: targetDir });
+          } else {
+            sendLog(`[ERROR] Execution failed with exit code ${code}`);
+            resolve({ success: false, reason: `Exit code ${code}` });
+          }
+        });
+
+      } catch (err) {
+        resolve({ success: false, reason: err.message });
+      }
+    });
+  });
+
+  ipcMain.handle('platform-uninstall', async (event, { platformId, method, container, cwd }) => {
+    return uninstallPlatform(platformId, method, container, cwd, runningProcesses);
+  });
+
+  log.info('[platformInstaller] IPC handlers registered.');
+}
+
+module.exports = { registerPlatformInstallerHandlers };

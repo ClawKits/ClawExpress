@@ -1,0 +1,26 @@
+.sidebar { width: 220px; background-color: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 24px 0; transition: width 0.3s ease; height: 100vh; }
+.collapsed { width: 72px; }
+.header { padding: 0 24px 32px 24px; display: flex; align-items: center; justify-content: space-between; font-size: 16px; font-weight: 500; letter-spacing: -0.3px; }
+.brandArea { display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; transition: opacity 0.2s; }
+.brandText { color: var(--text-primary); font-weight: 600; font-size: 15px; }
+.collapsed .brandArea { opacity: 0; width: 0; visibility: hidden; }
+.brandIcon { color: var(--text-primary); flex-shrink: 0; }
+.toggleBtn { background: transparent; border: none; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 6px; border-radius: 5px; transition: all 0.2s; }
+.toggleBtn:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.07); }
+.navGroup, .footerGroup { margin-bottom: 32px; }
+.footerGroup { margin-top: auto; margin-bottom: 0; }
+.navLabel { padding: 0 24px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); margin-bottom: 8px; white-space: nowrap; transition: opacity 0.2s; }
+.collapsed .navLabel { opacity: 0; visibility: hidden; height: 0; margin-bottom: 0; }
+
+/* Nav items — secondary color is now bright enough, but boost hover further */
+.navItem { display: flex; align-items: center; gap: 12px; padding: 9px 24px; color: var(--text-secondary); text-decoration: none; font-size: 13px; font-weight: 400; transition: all 0.15s; cursor: pointer; white-space: nowrap; border-radius: 0; }
+.navItem:hover { color: var(--text-primary); background-color: rgba(255, 255, 255, 0.05); }
+
+/* Active item — white text + bright left border for clear selection indicator */
+.active { color: var(--text-primary) !important; font-weight: 500; background-color: rgba(255, 255, 255, 0.04); position: relative; }
+.active::before { content: ''; position: absolute; left: 0; top: 4px; bottom: 4px; width: 2px; background-color: var(--text-primary); border-radius: 0 2px 2px 0; }
+
+.collapsed .navItem { justify-content: center; padding: 12px 0; }
+.collapsed .navText, .collapsed .navBadge { display: none; }
+.navBadge { margin-left: auto; background: rgba(255,255,255,0.06); border: 1px solid var(--border); padding: 2px 7px; border-radius: 4px; font-size: 11px; color: var(--text-secondary); }
+.avatar { width: 20px; height: 20px; border-radius: 50%; }

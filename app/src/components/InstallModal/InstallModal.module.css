@@ -1,0 +1,161 @@
+.overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.modal {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 600px;
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 48px rgba(0,0,0,0.5);
+  overflow: hidden;
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.header {
+  padding: 24px 32px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.4px;
+}
+
+.closeBtn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  transition: all 0.2s;
+}
+
+.closeBtn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.body {
+  padding: 32px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.footer {
+  padding: 20px 32px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: rgba(0,0,0,0.2);
+}
+
+/* Steps Indicator */
+.stepper {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 32px;
+}
+.stepDot {
+  flex: 1;
+  height: 4px;
+  background-color: var(--border);
+  border-radius: 2px;
+  transition: background-color 0.3s;
+}
+.stepDot.active {
+  background-color: var(--text-primary);
+}
+
+/* Base Utility Classes within Modal */
+.btnPrimary, .btnSecondary {
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btnPrimary {
+  background-color: var(--text-primary);
+  color: var(--app-bg);
+  border: 1px solid var(--text-primary);
+}
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btnSecondary {
+  background-color: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.btnSecondary:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.methodGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.methodCard {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.methodCard:hover {
+  border-color: var(--text-muted);
+}
+
+.methodCard.selected {
+  border-color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.terminal {
+  background-color: #000;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  color: #a3a3a3;
+  font-family: monospace;
+  font-size: 12px;
+  height: 200px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

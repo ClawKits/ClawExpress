@@ -1,0 +1,82 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root, [data-theme="dark"] {
+  --app-bg: #030303;
+  --sidebar-bg: #0e0e0e;
+  --card-bg: #1a1a1a;
+  --border: #27272a;
+  --border-hover: #3f3f3f;
+  
+  --text-primary: #ffffff;
+  --text-secondary: #767d88;
+  --text-muted: #525252;
+  
+  --status-running: #22c55e;
+  --status-stopped: #525252;
+  --status-update: #f59e0b;
+  --status-error: #ef4444;
+
+  --font-primary: 'DM Sans', system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --app-bg: #f9f9fa;
+  --sidebar-bg: #ffffff;
+  --card-bg: #ffffff;
+  --border: #e5e7eb;
+  --border-hover: #d1d5db;
+  
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  color-scheme: light;
+}
+
+
+body {
+  background-color: var(--app-bg); color: var(--text-primary);
+  font-family: var(--font-primary); -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button { font-family: var(--font-primary); }
+#root { display: flex; height: 100vh; width: 100vw; }
+
+/* Ensure all select dropdowns inherit dark color-scheme to avoid white flash */
+select {
+  color-scheme: inherit;
+}
+
+/* ── Unified Titlebar — Window Controls ───────────────────────────────────── */
+.win-ctrl-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  width: 46px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.win-ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+.win-ctrl-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1.2s linear infinite;
+}

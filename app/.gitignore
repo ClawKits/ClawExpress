@@ -1,0 +1,53 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Local environment — never commit real env values
+.env
+.env.local
+.env.*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Electron build output
+dist-electron/
+
+# Runtime / temp files
+tmp_gemini_cli/
+out.txt
+Thiet
+qr_*.txt
+*.log
+test_*.log
+wstest.js
+zalo-test.js
+
+# SQLite runtime data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# OpenClaw runtime data (not for source control)
+.openclaw/tasks/
+.openclaw/logs/
+.openclaw/openclaw.json
+.openclaw/update-check.json

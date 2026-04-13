@@ -1,0 +1,34 @@
+# Node.js
+node_modules/
+dist/
+dist-electron/
+release/
+*.local
+_*
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# SQLite Databases (Runtime state)
+*.db
+*.sqlite
+
+# Developer custom rules
+
+# OS Files
+.DS_Store
+Thumbs.db
+*.bak
+*.ps1
+
+# Local tool config
+.agent/
+.claude/
+.github/workflows/manual-build.yml
+.github/workflows/pr-build-check.yml
+.github/workflows/sync-to-public.yml
