@@ -117,6 +117,17 @@ function finalizeConfig(targetDir, config, configMapping, sendLog) {
           models: [{ id: rawModel.replace(/^(openai|litellm)\//i, ''), name: 'Custom', input: ['text'], contextWindow: 128000 }],
         };
         existing.agents.defaults.model.primary = `litellm/${rawModel.replace(/^(openai|litellm)\//i, '')}`;
+      } else if (llm.provider === 'deepseek') {
+        const modelId = modelFull.replace('deepseek/', '');
+        existing.models = existing.models || {};
+        existing.models.providers = existing.models.providers || {};
+        existing.models.providers.litellm = {
+          baseUrl: 'https://api.deepseek.com',
+          apiKey: '${DEEPSEEK_API_KEY}',
+          api: 'openai-completions',
+          models: [{ id: modelId, name: 'DeepSeek Model', input: ['text'], contextWindow: 128000, maxTokens: 8192 }]
+        };
+        existing.agents.defaults.model.primary = `litellm/${modelId}`;
       }
 
       sendLog(`[INFO] Config model: ${existing.agents.defaults.model.primary}`);
