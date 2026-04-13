@@ -4,7 +4,7 @@ productName: ClawExpress
 nativeRebuilder: "legacy"
 
 extraMetadata:
-  version: "0.1.11-preview"
+  version: "0.1.12-preview"
 
 # Output directory for build artifacts (relative to `app/`)
 directories:
@@ -56,7 +56,7 @@ mac:
   gatekeeperAssess: false
 
 dmg:
-  title: ClawExpress
+  title: "ClawExpress-${version}-${arch}"
   iconSize: 80
 
 # ── Linux ─────────────────────────────────────────────────────────────────────
@@ -69,6 +69,7 @@ linux:
   icon: public/logo.png
   category: Development
   maintainer: ClawKits <hello@clawexpress.com>
+
 
 
 
