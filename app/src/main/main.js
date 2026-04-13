@@ -74,6 +74,20 @@ const saveSettings = (data) => {
 let mainWindow;
 let tray = null;
 
+function ensureTray() {
+  if (!tray) {
+    const icon = nativeImage.createFromPath(path.join(__dirname, '../../public/logo.png'));
+    tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
+    tray.setToolTip('ClawExpress');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Show', click: () => { mainWindow?.show(); mainWindow?.restore(); mainWindow?.focus(); } },
+      { type: 'separator' },
+      { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
+    ]));
+    tray.on('double-click', () => { mainWindow?.show(); mainWindow?.restore(); mainWindow?.focus(); });
+  }
+}
+
 function createWindow() {
   const isWin = process.platform === 'win32';
   mainWindow = new BrowserWindow({
@@ -97,20 +111,6 @@ function createWindow() {
 
   mainWindow.maximize();
 
-  function ensureTray() {
-    if (!tray) {
-      const icon = nativeImage.createFromPath(path.join(__dirname, '../../public/logo.png'));
-      tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-      tray.setToolTip('ClawExpress');
-      tray.setContextMenu(Menu.buildFromTemplate([
-        { label: 'Show', click: () => { mainWindow.show(); mainWindow.restore(); mainWindow.focus(); } },
-        { type: 'separator' },
-        { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
-      ]));
-      tray.on('double-click', () => { mainWindow.show(); mainWindow.restore(); mainWindow.focus(); });
-    }
-  }
-
   // Minimize-to-tray: intercept close if setting is on
   mainWindow.on('close', (e) => {
     const prefs = loadSettings();
@@ -125,7 +125,6 @@ function createWindow() {
   mainWindow.on('minimize', (e) => {
     const prefs = loadSettings();
     if (prefs.minimizeToTray && !app.isQuitting) {
-      e.preventDefault();
       mainWindow.hide();
       ensureTray();
     }
@@ -184,7 +183,16 @@ app.on('window-all-closed', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Core IPC — Window Controls
 // ─────────────────────────────────────────────────────────────────────────────
-ipcMain.handle('window-min',   (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
+ipcMain.handle('window-min',   (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const prefs = loadSettings();
+  if (prefs.minimizeToTray) {
+    win?.hide();
+    ensureTray();
+  } else {
+    win?.minimize();
+  }
+});
 ipcMain.handle('window-max',   (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win?.isMaximized()) win.restore(); else win?.maximize();
