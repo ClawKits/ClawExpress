@@ -1,5 +1,5 @@
 const { autoUpdater } = require('electron-updater');
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, net, app } = require('electron');
 
 // ─── Core Updater Service ────────────────────────────────────────────────────
 // Encapsulates electron-updater for silent background updates.
@@ -42,7 +42,7 @@ function initUpdater(log) {
   });
 
   // Chrome-style: download silently in background immediately when update is found
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = process.platform !== 'darwin';
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.autoRunAppAfterInstall = true;
 
@@ -84,8 +84,46 @@ function initUpdater(log) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+async function checkMacUpdatesManually() {
+  updateState({ status: 'checking', error: null });
+  try {
+    const request = net.request({
+      url: 'https://api.github.com/repos/ClawKits/ClawExpress/releases/latest',
+      headers: { 'User-Agent': 'ClawExpress-Updater' }
+    });
+    
+    request.on('response', (response) => {
+      let data = '';
+      response.on('data', chunk => data += chunk);
+      response.on('end', () => {
+        try {
+          if (response.statusCode !== 200) throw new Error('API Error ' + response.statusCode);
+          const release = JSON.parse(data);
+          const latestVersion = release.tag_name.replace('v', '');
+          const currentVersion = app.getVersion();
+          
+          if (latestVersion !== currentVersion) {
+            updateState({ status: 'available', updateInfo: { version: latestVersion, releaseNotes: release.body } });
+          } else {
+            updateState({ status: 'not-available', updateInfo: { version: latestVersion } });
+          }
+        } catch (e) {
+          updateState({ status: 'error', error: e.message });
+        }
+      });
+    });
+    request.on('error', (err) => updateState({ status: 'error', error: err.message }));
+    request.end();
+  } catch (err) {
+    updateState({ status: 'error', error: err.message });
+  }
+}
+
 function checkForUpdates() {
   try {
+    if (process.platform === 'darwin') {
+      return checkMacUpdatesManually();
+    }
     return autoUpdater.checkForUpdates();
   } catch (err) {
     _log?.error('[Updater] checkForUpdates failed:', err.message);
@@ -94,6 +132,12 @@ function checkForUpdates() {
 
 function downloadUpdate() {
   try {
+    if (process.platform === 'darwin') {
+      const { shell } = require('electron');
+      shell.openExternal('https://github.com/ClawKits/ClawExpress/releases/latest');
+      updateState({ status: 'error', error: 'macOS requires manual updates. Opened release page in browser.' });
+      return;
+    }
     return autoUpdater.downloadUpdate();
   } catch (err) {
     _log?.error('[Updater] downloadUpdate failed:', err.message);

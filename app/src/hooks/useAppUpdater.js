@@ -68,7 +68,8 @@ function boot() {
           setState({ status: 'available', updateInfo: payload?.updateInfo, isDownloading: false });
           // Safety-net: if autoDownload didn't trigger within 1s, force it from renderer
           setTimeout(() => {
-            if (_state.status === 'available' && !_state.isDownloading) {
+            const isMac = navigator.userAgent.includes('Mac');
+            if (_state.status === 'available' && !_state.isDownloading && !isMac) {
               api.downloadUpdate().catch(() => {});
             }
           }, 1000);

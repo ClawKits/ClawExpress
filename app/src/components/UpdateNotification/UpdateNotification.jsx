@@ -54,14 +54,24 @@ export default function UpdateNotification() {
       {/* Actions */}
       {!isDownloading && status !== 'error' && (
         <div className={styles.actions}>
-          {isDownloaded && (
+          {(isDownloaded || navigator.userAgent.includes('Mac')) && (
             <button
               id="update-install-btn"
               className={styles.btnPrimary}
-              onClick={triggerInstall}
+              onClick={() => {
+                if (navigator.userAgent.includes('Mac')) {
+                  window.electron?.ipcRenderer?.invoke('open-url', 'https://github.com/ClawKits/ClawExpress/releases/latest');
+                  setDismissed(true);
+                } else {
+                  triggerInstall();
+                }
+              }}
             >
-              <RefreshCw size={13} />
-              Restart &amp; Install
+              {navigator.userAgent.includes('Mac') ? (
+                <><Download size={13} /> Download on GitHub</>
+              ) : (
+                <><RefreshCw size={13} /> Restart &amp; Install</>
+              )}
             </button>
           )}
           <button
