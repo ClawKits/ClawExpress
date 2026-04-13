@@ -205,10 +205,11 @@ function spawnPlatform(platformId, config, webContents) {
 
     sendLog(`[SYSTEM] Starting: ${cmd} ${scriptArr.slice(1).join(' ')}`);
 
-    // On Windows, run via cmd.exe /c to execute .cmd scripts safely.
-    // This avoids both the EINVAL error (can't spawn .cmd directly) and
-    // the DEP0190 security warning from shell:true with arg concatenation.
-    const spawnArgs = isWin
+    // On Windows, run via cmd.exe /c ONLY for .cmd scripts (like npm/npx).
+    // Native executables (like docker.exe) should be spawned natively to avoid
+    // console allocation failures and quote mangling in packaged GUI mode.
+    const isCmdScript = isWin && cmd.endsWith('.cmd');
+    const spawnArgs = isCmdScript
       ? ['cmd.exe', ['/c', cmd, ...scriptArr.slice(1)]]
       : [cmd, scriptArr.slice(1)];
 
