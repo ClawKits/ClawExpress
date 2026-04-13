@@ -205,6 +205,7 @@ function registerPlatformInstallerHandlers(runningProcesses) {
             cwd: targetDir,
             stdio: ['ignore', 'pipe', 'pipe'],
             env: npmEnv,
+            shell: isWin
           });
 
           installChild.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
@@ -222,7 +223,7 @@ function registerPlatformInstallerHandlers(runningProcesses) {
             sendLog('[SUCCESS] openclaw installed globally.');
             doFinalizeConfig();
             const verifyCmd = isWin ? 'openclaw.cmd' : 'openclaw';
-            const verify = require('child_process').spawnSync(verifyCmd, ['--version'], { encoding: 'utf8', env: baseEnv });
+            const verify = require('child_process').spawnSync(verifyCmd, ['--version'], { encoding: 'utf8', env: baseEnv, shell: isWin });
             if (verify.status === 0) {
               sendLog(`[SUCCESS] openclaw CLI verified: ${verify.stdout.trim()}`);
             } else {
@@ -250,7 +251,8 @@ function registerPlatformInstallerHandlers(runningProcesses) {
         const child = spawn(cmd, args, { 
           cwd: targetDir,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: baseEnv
+          env: baseEnv,
+          shell: isWin
         });
         child.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
         child.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[WARN] ${l}`)));
