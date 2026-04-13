@@ -88,7 +88,7 @@ async function checkMacUpdatesManually() {
   updateState({ status: 'checking', error: null });
   try {
     const request = net.request({
-      url: 'https://api.github.com/repos/ClawKits/ClawExpress/releases/latest',
+      url: 'https://api.github.com/repos/ClawKits/ClawExpress/releases',
       headers: { 'User-Agent': 'ClawExpress-Updater' }
     });
     
@@ -98,7 +98,10 @@ async function checkMacUpdatesManually() {
       response.on('end', () => {
         try {
           if (response.statusCode !== 200) throw new Error('API Error ' + response.statusCode);
-          const release = JSON.parse(data);
+          const releases = JSON.parse(data);
+          if (!releases.length) throw new Error('No releases found');
+          
+          const release = releases[0];
           const latestVersion = release.tag_name.replace('v', '');
           const currentVersion = app.getVersion();
           
