@@ -151,7 +151,7 @@ function spawnPlatform(platformId, config, webContents) {
                scriptArr.splice(runIndex + 1, 0, '--name', containerName);
            }
             // Configure the base environment and standard Ports for OpenClaw Gateway
-           if (platformId === 'openclaw') {
+           if (platformId === 'openclaw' || config.registryId === 'openclaw') {
                const nameIndex = scriptArr.indexOf('--name');
                const injectIndex = nameIndex !== -1 ? nameIndex + 2 : runIndex + 1;
                
