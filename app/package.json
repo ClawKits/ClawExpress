@@ -1,7 +1,7 @@
 {
   "name": "app",
   "private": true,
-  "version": "0.1.13-preview",
+  "version": "0.1.14-preview",
   "main": "dist-electron/main/main.js",
   "scripts": {
     "dev": "vite",

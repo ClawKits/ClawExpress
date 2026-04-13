@@ -4,7 +4,7 @@ const VALID_CHANNELS = [
   // Window
   'window-min', 'window-max', 'window-close',
   // Process
-  'platform-start', 'platform-stop', 'platform-status', 'platform-scan', 'platform-install', 'platform-send-input', 'platform-uninstall', 'platform-health-check',
+  'platform-start', 'platform-stop', 'platform-status', 'platform-scan', 'platform-install', 'platform-send-input', 'platform-uninstall', 'platform-health-check', 'install-global-dependency',
   // Persistence
   'platforms-load', 'platforms-save', 'db-path',
   // Debug Logging
@@ -34,7 +34,7 @@ const VALID_CHANNELS = [
 ];
 
 const VALID_EVENTS = [
-  'platform-log', 'platform-status-change', 'app-log', 'platform-ready', 'oauth-token-received',
+  'platform-log', 'platform-status-change', 'app-log', 'platform-ready', 'oauth-token-received', 'dependency-log',
   // Updater events (broadcast from main process)
   'updater-event',
   // Channel login events

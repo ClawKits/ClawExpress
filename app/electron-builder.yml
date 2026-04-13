@@ -4,7 +4,7 @@ productName: ClawExpress
 nativeRebuilder: "legacy"
 
 extraMetadata:
-  version: "0.1.13-preview"
+  version: "0.1.14-preview"
 
 # Output directory for build artifacts (relative to `app/`)
 directories:

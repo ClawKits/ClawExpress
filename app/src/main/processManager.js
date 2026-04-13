@@ -85,8 +85,7 @@ function spawnPlatform(platformId, config, webContents) {
         execSync('openclaw --version', { shell: shellOpt, stdio: 'ignore' });
       } catch (err) {
         sendLog('[SYSTEM] ERROR: openclaw CLI is missing or not in PATH! Please install it via NPM first.');
-        event.sender.send('platform-error', { platformId, error: 'openclaw CLI is missing or not in PATH. Please install it first.' });
-        return;
+        return { success: false, reason: 'NPM_MISSING_DEPENDENCY' };
       }
     }
     // ──────────────────────────────────────────────────────────────────────
@@ -144,9 +143,19 @@ function spawnPlatform(platformId, config, webContents) {
        // Ensure naming constraint is set securely dynamically
        const runIndex = scriptArr.indexOf('run');
        if (runIndex !== -1) {
-           if (!scriptArr.includes('-v') && !scriptArr.some(arg => arg.includes(':/home/node/.openclaw'))) {
-               scriptArr.splice(runIndex + 1, 0, '-v', `${dockerMountSrc}:/home/node/.openclaw`);
-           }
+            // Strip out any potentially injected config directory mounts to enforce single-source-of-truth
+            const customMountIdx = scriptArr.findIndex(arg => typeof arg === 'string' && arg.includes(':/home/node/.openclaw'));
+            if (customMountIdx !== -1) {
+                // Remove the mount path and the preceding '-v' argument
+                if (customMountIdx > 0 && scriptArr[customMountIdx - 1] === '-v') {
+                    scriptArr.splice(customMountIdx - 1, 2);
+                } else {
+                    scriptArr.splice(customMountIdx, 1);
+                }
+            }
+            // Always inject the correct single-source-of-truth mount
+            const finalRunIndex = scriptArr.indexOf('run');
+            scriptArr.splice(finalRunIndex + 1, 0, '-v', `${dockerMountSrc}:/home/node/.openclaw`);
            if (!scriptArr.includes('--name')) {
                scriptArr.splice(runIndex + 1, 0, '--name', containerName);
            }
@@ -199,9 +208,19 @@ function spawnPlatform(platformId, config, webContents) {
       cmd += '.cmd';
     }
 
+    // Load Global API keys from Single Source of Truth so NPM mode can parse ${API_KEY} variables
+    let ssotEnv = {};
+    try {
+      const cfgLoc = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+      if (fs.existsSync(cfgLoc)) {
+        const fullCfg = JSON.parse(fs.readFileSync(cfgLoc, 'utf8'));
+        if (fullCfg.env) ssotEnv = fullCfg.env;
+      }
+    } catch (_) {}
+
     // Gateway uses default ~/.openclaw/openclaw.json — single source of truth.
     // No OPENCLAW_CONFIG_PATH override needed.
-    const spawnEnv = { ...process.env, ...(config.env || {}) };
+    const spawnEnv = { ...process.env, ...ssotEnv, ...(config.env || {}) };
 
     sendLog(`[SYSTEM] Starting: ${cmd} ${scriptArr.slice(1).join(' ')}`);
 
@@ -233,6 +252,7 @@ function spawnPlatform(platformId, config, webContents) {
         if (gatewayReadyEmitted || !runningProcesses.has(platformId)) return;
         
         const configLoc = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+        
         let token;
         try {
           if (fs.existsSync(configLoc)) {

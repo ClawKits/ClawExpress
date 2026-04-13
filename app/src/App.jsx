@@ -11,6 +11,7 @@ import SkillsPage from './components/Skills/SkillsPage';
 import { ToastContainer } from './components/Toast/Toast';
 import DebugConsole from './components/DebugConsole/DebugConsole';
 import AuthModal from './components/common/AuthModal';
+import NpmDependencyModal from './components/InstallModal/NpmDependencyModal';
 import { usePlatformStore } from './store/usePlatformStore';
 import useAuthStore from './store/useAuthStore';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
@@ -56,6 +57,7 @@ function App() {
       <ToastContainer />
       <DebugConsole />
       <AuthModal isOpen={isAuthModalOpen} onClose={closeAuthModal} />
+      <NpmDependencyModal />
       <UpdateNotification />
     </>
   );

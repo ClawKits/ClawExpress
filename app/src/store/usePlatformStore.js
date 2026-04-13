@@ -9,6 +9,8 @@ export const usePlatformStore = create((set, get) => ({
   marketplace: [],
   marketplaceStatus: 'idle',
   initialized: false,
+  missingNpmDependencyFor: null,
+  closeNpmDependencyModal: () => set({ missingNpmDependencyFor: null }),
 
   // ─── Init: load from disk on app start ──────────────────────────────────
   init: async () => {
@@ -94,11 +96,20 @@ export const usePlatformStore = create((set, get) => ({
       }));
       get().persist();
     } else {
-      set(state => ({
-        platforms: state.platforms.map(p =>
-          p.id === id ? { ...p, status: 'ERROR' } : p
-        )
-      }));
+      if (result?.reason === 'NPM_MISSING_DEPENDENCY') {
+        set({ missingNpmDependencyFor: id });
+        set(state => ({
+          platforms: state.platforms.map(p =>
+            p.id === id ? { ...p, status: 'STOPPED' } : p
+          )
+        }));
+      } else {
+        set(state => ({
+          platforms: state.platforms.map(p =>
+            p.id === id ? { ...p, status: 'ERROR' } : p
+          )
+        }));
+      }
     }
   },
 

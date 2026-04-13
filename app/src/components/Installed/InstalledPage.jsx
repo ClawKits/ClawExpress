@@ -63,6 +63,18 @@ const ConfirmDialog = ({ platform, onConfirm, onCancel }) => {
   );
 };
 
+const DockerLogo = ({ size = 48 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="#2496ED" xmlns="http://www.w3.org/2000/svg">
+    <path d="M13.983 11.278h-1.693v1.651h1.693v-1.651ZM11.168 11.278H9.475v1.651h1.693v-1.651ZM8.354 11.278H6.66v1.651h1.694v-1.651ZM16.797 11.278h-1.693v1.651h1.693v-1.651ZM13.983 8.355h-1.693v1.649h1.693V8.355ZM11.168 8.355H9.475v1.649h1.693V8.355ZM8.354 8.355H6.66v1.649h1.694V8.355ZM11.168 5.431H9.475v1.65h1.693v-1.65ZM10.534 1.761C6.273 1.761 2.82 5.215 2.82 9.475c0 4.26 3.453 7.713 7.714 7.713 4.26 0 7.714-3.453 7.714-7.713 0-4.26-3.454-7.714-7.714-7.714ZM3.315 15.65c-2.073-1.423-3.08-3.957-2.73-6.49 1.157-1.157 2.92-1.464 4.417-1.077h.03c.538-2.614 2.651-4.726 5.426-4.994.038.307.076.615.076.884v1.883h5.992c1.767-1.42 2.766-3.61 2.766-6.028v-.154h.154c1.69 0 3.338.46 4.76 1.344 1.768 5.033 1.076 10.604-1.844 15.02-3.15 4.802-8.601 7.72-14.484 7.72-1.997 0-4.033-.346-5.993-1.037.422-.768.96-1.46 1.574-2.074.883 1.42 2.535 2.38 4.418 2.38 2.805 0 5.071-2.267 5.071-5.071s-2.266-5.072-5.07-5.072c-1.884 0-3.536.96-4.418 2.38-1.15-.65-2.074-1.573-2.727-2.726Z" />
+  </svg>
+);
+
+const NpmLogo = ({ size = 48 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="#CB3837" xmlns="http://www.w3.org/2000/svg">
+    <path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z" />
+  </svg>
+);
+
 const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
   const { platforms, toggleStatus, removePlatform, stopPlatform, startPlatform, setDashboardUrl } = usePlatformStore();
   const requireAuth = useRequireAuth();
@@ -218,7 +230,11 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
             return (
               <div key={platform.id} style={{ backgroundColor: 'var(--card-bg)', border: '1px solid', borderColor: isUpdating ? 'rgba(56, 189, 248, 0.4)' : 'var(--border)', borderRadius: '8px', overflow: 'hidden', transition: 'border-color 0.3s' }}>
                 <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {platform.id.includes('openclaw') ? <img src="./openclaw-logo.png" alt="OpenClaw" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px', boxSizing: 'border-box' }} /> : <Cpu size={40} color="var(--text-secondary)" />}
+                  {platform.id.includes('openclaw') ? (
+                    platform.method === 'docker' ? <DockerLogo size={64} />
+                    : platform.method === 'npm' ? <NpmLogo size={64} />
+                    : <img src="./openclaw-logo.png" alt="OpenClaw" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px', boxSizing: 'border-box' }} />
+                  ) : <Cpu size={40} color="var(--text-secondary)" />}
                 </div>
                 <div style={{ padding: '24px 20px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>

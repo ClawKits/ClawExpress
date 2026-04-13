@@ -288,6 +288,56 @@ function registerPlatformInstallerHandlers(runningProcesses) {
     });
   });
 
+  ipcMain.handle('install-global-dependency', async (event) => {
+    const sendLog = (msg) => {
+      if (event.sender && !event.sender.isDestroyed()) {
+        event.sender.send('dependency-log', msg);
+      }
+    };
+    return new Promise((resolve) => {
+      try {
+        const isWin = process.platform === 'win32';
+        const baseEnv = { ...process.env };
+        if (process.platform === 'darwin') {
+          baseEnv.PATH = `/usr/local/bin:/opt/homebrew/bin:/opt/local/bin:${baseEnv.PATH || ''}`;
+        }
+        
+        sendLog('[SYSTEM] Starting automatic installation...');
+        sendLog('[CMD] npm install -g openclaw@latest');
+        
+        const npmCmd = isWin ? 'npm.cmd' : 'npm';
+        const npmEnv = { ...baseEnv, SHARP_IGNORE_GLOBAL_LIBVIPS: '1' };
+        
+        const child = spawn(npmCmd, ['install', '-g', 'openclaw@latest'], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: npmEnv,
+          shell: isWin
+        });
+        
+        child.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[INFO] ${l}`)));
+        child.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[WARN] ${l}`)));
+        
+        child.on('error', err => {
+          sendLog(`[ERROR] Failed to start npm: ${err.message}`);
+          resolve({ success: false, reason: err.message });
+        });
+        
+        child.on('close', code => {
+          if (code !== 0) {
+            sendLog(`[ERROR] Installation failed with exit code ${code}`);
+            resolve({ success: false, reason: `Exit code ${code}` });
+          } else {
+            sendLog('[SUCCESS] openclaw installed globally.');
+            resolve({ success: true });
+          }
+        });
+      } catch (err) {
+        sendLog(`[ERROR] ${err.message}`);
+        resolve({ success: false, reason: err.message });
+      }
+    });
+  });
+
   ipcMain.handle('platform-uninstall', async (event, { platformId, method, container, cwd }) => {
     return uninstallPlatform(platformId, method, container, cwd, runningProcesses);
   });
