@@ -208,8 +208,8 @@ function spawnPlatform(platformId, config, webContents) {
     let cmd = scriptArr[0];
     // On Windows, .cmd scripts must run through cmd.exe (shell: true).
     // DO NOT manually add .cmd suffix - let the shell resolve it.
-    // Only npm/npx need explicit .cmd on Windows when shell:false.
-    if (isWin && (cmd === 'npm' || cmd === 'npx')) {
+    // Only npm/npx/openclaw need explicit .cmd on Windows when shell:false.
+    if (isWin && (cmd === 'npm' || cmd === 'npx' || cmd === 'openclaw')) {
       cmd += '.cmd';
     }
 
@@ -226,6 +226,9 @@ function spawnPlatform(platformId, config, webContents) {
     // Gateway uses default ~/.openclaw/openclaw.json — single source of truth.
     // No OPENCLAW_CONFIG_PATH override needed.
     const spawnEnv = { ...process.env, ...ssotEnv, ...(config.env || {}) };
+    if (config.method === 'npm') {
+      spawnEnv.HOST = '0.0.0.0'; // Fixes IPv4/IPv6 WebSocket localhost resolving issue on Windows
+    }
 
     sendLog(`[SYSTEM] Starting: ${cmd} ${scriptArr.slice(1).join(' ')}`);
 
