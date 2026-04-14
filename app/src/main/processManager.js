@@ -194,9 +194,9 @@ function spawnPlatform(platformId, config, webContents) {
          if (isWin) {
            // Invoke-CimMethod Terminate sends WM_CLOSE which Node.js ignores.
            // Stop-Process -Force is equivalent to taskkill /F and reliably kills the process.
-           require('child_process').spawnSync('powershell', ['-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'openclaw.mjs' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"], { timeout: 8000, windowsHide: true });
+           require('child_process').spawnSync('powershell', ['-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\.js|openclaw\.mjs).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"], { timeout: 8000, windowsHide: true });
          } else {
-           require('child_process').spawnSync('pkill', ['-f', 'openclaw.mjs'], { timeout: 5000 });
+           require('child_process').spawnSync('pkill', ['-f', '.*openclaw.*(index\.js|openclaw\.mjs).*'], { timeout: 5000 });
          }
        } catch (e) { }
 
@@ -227,7 +227,7 @@ function spawnPlatform(platformId, config, webContents) {
     // No OPENCLAW_CONFIG_PATH override needed.
     const spawnEnv = { ...process.env, ...ssotEnv, ...(config.env || {}) };
     if (config.method === 'npm') {
-      spawnEnv.HOST = '0.0.0.0'; // Fixes IPv4/IPv6 WebSocket localhost resolving issue on Windows
+      spawnEnv.HOST = '127.0.0.1'; // Force strictly IPv4 loopback for security, preventing LAN access
     }
 
     sendLog(`[SYSTEM] Starting: ${cmd} ${scriptArr.slice(1).join(' ')}`);
@@ -398,11 +398,11 @@ function stopPlatform(platformId, webContents, method, container) {
         sendLog(`[SYSTEM] Sweeping orphaned openclaw.mjs processes...`);
         require('child_process').spawnSync(
           'powershell',
-          ['-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'openclaw.mjs' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+          ['-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\.js|openclaw\.mjs).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
           { timeout: 8000, windowsHide: true }
         );
       } else {
-        require('child_process').spawnSync('pkill', ['-f', 'openclaw.mjs'], { timeout: 5000 });
+        require('child_process').spawnSync('pkill', ['-f', '.*openclaw.*(index\.js|openclaw\.mjs).*'], { timeout: 5000 });
       }
     } else {
       if (!entry) return { success: false, reason: 'Not running' };
