@@ -82,7 +82,7 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
   const [confirmTarget, setConfirmTarget] = useState(null);
 
   const [openclawInfo, setOpenclawInfo] = useState(null);
-  const [updateStates, setUpdateStates] = useState({});
+  const { updateStates, setUpdateStates } = usePlatformStore();
 
   // Listen for platform-ready events emitted when gateway starts and token is available
   useEffect(() => {
@@ -94,9 +94,32 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
 
   // Fetch OpenClaw version info if it is installed
   useEffect(() => {
-    const clawPlatform = platforms.find(p => p.id.includes('openclaw'));
+    const clawPlatform = platforms.find(p => (p.registryId || p.id).includes('openclaw'));
     if (clawPlatform) {
-      window.electron?.ipcRenderer.invoke('get-openclaw-versions', { method: clawPlatform.method, pVersion: clawPlatform.version }).then(res => {
+      if (clawPlatform.method === 'docker' && clawPlatform.status !== 'RUNNING') {
+        if (clawPlatform.version !== '-') {
+          const { updatePlatform } = usePlatformStore.getState();
+          updatePlatform(clawPlatform.id, { version: '-' });
+        }
+        
+        // Still fetch latest versions from GH so we can show the Update button
+        window.electron?.ipcRenderer.invoke('get-openclaw-versions', { 
+          method: clawPlatform.method, 
+          config: clawPlatform,
+          pVersion: '-' 
+        }).then(res => {
+          if (res && res.success) {
+            setOpenclawInfo({ current: 'unknown', latest: res.latest, versions: res.versions });
+          }
+        });
+        return;
+      }
+
+      window.electron?.ipcRenderer.invoke('get-openclaw-versions', { 
+        method: clawPlatform.method, 
+        config: clawPlatform,
+        pVersion: clawPlatform.version 
+      }).then(res => {
         if (res && res.success) {
           setOpenclawInfo({ current: res.current, latest: res.latest, versions: res.versions });
           
@@ -114,7 +137,7 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
         console.error("IPC Error fetching version:", err);
       });
     }
-  }, [platforms.length]);
+  }, [platforms.length, platforms.find(p => (p.registryId || p.id).includes('openclaw'))?.method, platforms.find(p => (p.registryId || p.id).includes('openclaw'))?.status]);
 
   const handleUpdateOpenClaw = async (platformId, cwd, method) => {
     if (!openclawInfo || !openclawInfo.latest) return;
@@ -126,10 +149,6 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
       if (res && res.success) {
         setOpenclawInfo(prev => ({ ...prev, current: openclawInfo.latest }));
         
-        // Persist the new version info to the local database so it doesn't revert visually on next boot
-        const { updatePlatform } = usePlatformStore.getState();
-        updatePlatform(platformId, { version: openclawInfo.latest });
-
         setUpdateStates(prev => ({ ...prev, [platformId]: { status: 'success' } }));
         toast.success(`Successfully updated to version v${openclawInfo.latest}`);
         
@@ -230,7 +249,7 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
             return (
               <div key={platform.id} style={{ backgroundColor: 'var(--card-bg)', border: '1px solid', borderColor: isUpdating ? 'rgba(56, 189, 248, 0.4)' : 'var(--border)', borderRadius: '8px', overflow: 'hidden', transition: 'border-color 0.3s' }}>
                 <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {platform.id.includes('openclaw') ? (
+                  {(platform.registryId || platform.id).includes('openclaw') ? (
                     platform.method === 'docker' ? <DockerLogo size={64} />
                     : platform.method === 'npm' ? <NpmLogo size={64} />
                     : <img src="./openclaw-logo.png" alt="OpenClaw" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px', boxSizing: 'border-box' }} />
@@ -247,7 +266,7 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
                     <span>{platform.version} · via {platform.method}</span>
                     
                     {(() => {
-                      const isOpenClaw = platform.id.includes('openclaw');
+                      const isOpenClaw = (platform.registryId || platform.id).includes('openclaw');
                       const hasUpdate = isOpenClaw && openclawInfo && openclawInfo.current !== 'unknown' && openclawInfo.current !== openclawInfo.latest;
                       const cleanVer = (v) => v ? v.toString().replace(/^v+/i, '').trim() : '';
                       
@@ -470,7 +489,7 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
                         e.currentTarget.style.color = isUpdating ? '#38bdf8' : 'var(--text-secondary)';
                       }}
                     >
-                      Console {isUpdating && <RefreshCw size={12} style={{ animation: 'spin 1.5s linear infinite' }} />}
+                      Console
                     </button>
                   </div>
                 </div>

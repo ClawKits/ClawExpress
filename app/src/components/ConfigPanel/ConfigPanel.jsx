@@ -286,6 +286,19 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
     }
     if (chatDraft.SLACK_APP_TOKEN?.trim()) envObj.SLACK_APP_TOKEN = chatDraft.SLACK_APP_TOKEN.trim();
 
+    const methodChanged = draft.method && draft.method !== platform.method;
+    const wasRunning = platform.status === 'RUNNING';
+
+    // To prevent zombie processes, we must STOP the old runtime method 
+    // BEFORE updating the Zustand state to the new method.
+    if (methodChanged && wasRunning) {
+      const toastId = toast.loading(`Switching runtime to ${draft.method}...`);
+      await stopPlatform(platform.id);
+      // Let the OS release file/port locks safely
+      await new Promise(r => setTimeout(r, 1500));
+      toast.dismiss(toastId);
+    }
+
     updatePlatform(platform.id, {
       name: draft.name,
       port: draft.port ? Number(draft.port) : null,
@@ -294,6 +307,7 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
       cwd: draft.cwd || null,
       container: draft.container || null,
       env: envObj,
+      ...(methodChanged ? { version: '-' } : {})
     });
 
     const envToRemove = ALL_REMOVABLE_KEYS.filter(k => !(k in envObj));
@@ -319,14 +333,15 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
 
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
-    if (platform.status === 'RUNNING') setRestartRequired(true);
 
-    if (draft.method !== platform.method) {
-      toast.loading('Runtime changed. Refreshing application...');
-      setTimeout(() => {
-        window.location.reload();
-      }, 1000);
+    if (methodChanged && wasRunning) {
+      // Seamlessly start the new runtime method automatically
+      await startPlatform(platform.id);
+      toast.success('Runtime updated seamlessly.');
+    } else if (wasRunning) {
+      setRestartRequired(true);
     }
+
   };
 
   const handleRestartNow = async () => {

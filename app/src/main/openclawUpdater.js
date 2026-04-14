@@ -38,11 +38,40 @@ function registerOpenclawUpdaterHandlers() {
           try {
             const util = require('util');
             const exec = util.promisify(require('child_process').exec);
-            // In Docker, we can inspect the running container or simply run it briefly to get its version
             const targetTag = (params && params.config && params.config.version) ? params.config.version.replace(/^v+/i, '').trim() : 'latest';
-            const { stdout } = await exec(`docker run --rm ghcr.io/openclaw/openclaw:${targetTag} node openclaw.mjs --version`, { shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash' });
-            const match = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
-            if (match) current = match[0];
+            
+            const isWin = process.platform === 'win32';
+            const PATH_SEP = isWin ? ';' : ':';
+            const home = require('os').homedir();
+            const macPaths = `/usr/local/bin:/opt/homebrew/bin:${home}/.npm-global/bin:${home}/.orbstack/bin`;
+            const customPath = process.env.PATH + PATH_SEP + (isWin ? '' : macPaths);
+            const envWithPath = { ...process.env, PATH: customPath };
+            const shellOpt = isWin ? 'cmd.exe' : '/bin/bash';
+
+            let imageExistsLocally = false;
+            try {
+              await exec(`docker image inspect ghcr.io/openclaw/openclaw:${targetTag}`, { shell: shellOpt, env: envWithPath });
+              imageExistsLocally = true;
+            } catch (err) {}
+
+            let tagToRun = null;
+            if (imageExistsLocally) {
+                tagToRun = targetTag;
+            } else {
+                try {
+                  await exec(`docker image inspect ghcr.io/openclaw/openclaw:latest`, { shell: shellOpt, env: envWithPath });
+                  tagToRun = 'latest';
+                } catch (err) {}
+            }
+
+            if (tagToRun) {
+              const { stdout } = await exec(`docker run --rm ghcr.io/openclaw/openclaw:${tagToRun} node openclaw.mjs --version`, { 
+                shell: shellOpt,
+                env: envWithPath
+              });
+              const match = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
+              if (match) current = match[0];
+            }
           } catch(e) {
             log.warn('[Updater] Could not retrieve local docker version. Container missing or stopped?', e.message);
           }
@@ -74,13 +103,19 @@ function registerOpenclawUpdaterHandlers() {
       const isWin    = process.platform === 'win32';
       const shellOpt = isWin ? 'cmd.exe' : '/bin/bash';
 
+      const PATH_SEP = isWin ? ';' : ':';
+      const home = require('os').homedir();
+      const macPaths = `/usr/local/bin:/opt/homebrew/bin:${home}/.npm-global/bin:${home}/.orbstack/bin`;
+      const customPath = process.env.PATH + PATH_SEP + (isWin ? '' : macPaths);
+      const envWithPath = { ...process.env, PATH: customPath };
+
       try {
-        const { stdout } = await exec('openclaw --version', { shell: shellOpt });
+        const { stdout } = await exec('openclaw --version', { shell: shellOpt, env: envWithPath });
         const match = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
         if (match) current = match[0];
       } catch (_) {
         try {
-          const { stdout } = await exec('npx --no-install openclaw --version', { shell: shellOpt });
+          const { stdout } = await exec('npx --no-install openclaw --version', { shell: shellOpt, env: envWithPath });
           const match2 = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
           if (match2) current = match2[0];
         } catch (e2) {
@@ -134,25 +169,48 @@ function registerOpenclawUpdaterHandlers() {
     const isWin    = process.platform === 'win32';
     const shellOpt = isWin ? 'cmd.exe' : '/bin/bash';
 
+    const PATH_SEP = isWin ? ';' : ':';
+    const home = require('os').homedir();
+    const macPaths = `/usr/local/bin:/opt/homebrew/bin:${home}/.npm-global/bin:${home}/.orbstack/bin`;
+    const customPath = process.env.PATH + PATH_SEP + (isWin ? '' : macPaths);
+    const envWithPath = { ...process.env, PATH: customPath };
+
     try {
       if (method === 'docker') {
          log.info(`[Updater] Pulling docker image ghcr.io/openclaw/openclaw:${targetVersion}...`);
-         await new Promise((resolve, reject) => {
-           const pullProc = spawn('docker', ['pull', `ghcr.io/openclaw/openclaw:${targetVersion}`], { shell: true, stdio: 'ignore' });
-           pullProc.on('close', code => {
-             if (code === 0) resolve();
-             else reject(new Error('Docker pull exited with code ' + code));
+         try {
+           await new Promise((resolve, reject) => {
+             const pullProc = spawn('docker', ['pull', `ghcr.io/openclaw/openclaw:${targetVersion}`], { 
+               stdio: 'ignore', 
+               env: envWithPath 
+             });
+             pullProc.on('close', code => {
+               if (code === 0) resolve();
+               else reject(new Error('Docker pull exited with code ' + code));
+             });
+             pullProc.on('error', reject);
            });
-           pullProc.on('error', reject);
-         });
-         
-         return { success: true, versionInstalled: targetVersion };
+           
+           try {
+               await new Promise((resolve) => {
+                 const tagProc = spawn('docker', ['tag', `ghcr.io/openclaw/openclaw:${targetVersion}`, `ghcr.io/openclaw/openclaw:latest`], { 
+                   stdio: 'ignore', 
+                   env: envWithPath 
+                 });
+                 tagProc.on('close', () => resolve());
+               });
+           } catch(e) {}
+           
+           return { success: true, versionInstalled: targetVersion };
+         } catch (err) {
+           return { success: false, reason: 'Docker pull failed: ' + err.message };
+         }
       }
 
       // 1. Snapshot current version
       let currentVersion = 'unknown';
       try {
-        const { stdout } = await exec('openclaw --version', { shell: shellOpt });
+        const { stdout } = await exec('openclaw --version', { shell: shellOpt, env: envWithPath });
         currentVersion = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/)?.[0] || 'unknown';
       } catch (_) {}
 
@@ -170,7 +228,7 @@ function registerOpenclawUpdaterHandlers() {
       // 2. Install
       log.info(`[Updater] Installing openclaw@${targetVersion}...`);
       await new Promise((resolve, reject) => {
-        const installProcess = spawn('npm', ['install', '-g', `openclaw@${targetVersion}`], { shell: true, stdio: 'ignore' });
+        const installProcess = spawn('npm', ['install', '-g', `openclaw@${targetVersion}`], { shell: true, stdio: 'ignore', env: envWithPath });
         installProcess.on('close', code => {
           if (code === 0) resolve();
           else reject(new Error('npm install exited with code ' + code));
@@ -180,12 +238,12 @@ function registerOpenclawUpdaterHandlers() {
 
       // 3. Health check — auto-rollback if new version is broken
       try {
-        await exec('openclaw --version', { shell: shellOpt });
+        await exec('openclaw --version', { shell: shellOpt, env: envWithPath });
       } catch (_) {
         log.error('[Updater] Health check failed after installation! Rolling back binary...');
         if (currentVersion !== 'unknown') {
           await new Promise((resolve) => {
-            const revertProc = spawn('npm', ['install', '-g', `openclaw@${currentVersion}`], { shell: true, stdio: 'ignore' });
+            const revertProc = spawn('npm', ['install', '-g', `openclaw@${currentVersion}`], { shell: true, stdio: 'ignore', env: envWithPath });
             revertProc.on('close', () => resolve());
             revertProc.on('error', () => resolve());
           });

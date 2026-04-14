@@ -125,7 +125,7 @@ function spawnPlatform(platformId, config, webContents) {
          : openclawDir;
 
        // If empty, or struck with the old NPM structure (non-docker), recreate standard execution command
-       const targetTag = config.version ? config.version.replace(/^v+/i, '').trim() : 'latest';
+       const targetTag = (config.version && config.version !== '-') ? config.version.replace(/^v+/i, '').trim() : 'latest';
        const targetImage = `ghcr.io/openclaw/openclaw:${targetTag}`;
 
        if (scriptArr.length === 0 || scriptArr[0] !== 'docker') {
@@ -176,6 +176,11 @@ function spawnPlatform(platformId, config, webContents) {
                const portMap = `${config.port || 18789}:18789`;
                if (!scriptArr.includes(portMap)) {
                    scriptArr.splice(injectIndex, 0, '-p', portMap);
+               }
+               
+               // Expose port 8081 for OpenClaw WebSocket/Chat integration
+               if (!scriptArr.includes('8081:8081')) {
+                   scriptArr.splice(injectIndex, 0, '-p', '8081:8081');
                }
            }
        }

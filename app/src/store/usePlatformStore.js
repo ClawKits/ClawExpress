@@ -12,6 +12,11 @@ export const usePlatformStore = create((set, get) => ({
   missingNpmDependencyFor: null,
   closeNpmDependencyModal: () => set({ missingNpmDependencyFor: null }),
 
+  updateStates: {},
+  setUpdateStates: (updater) => set(state => ({
+    updateStates: typeof updater === 'function' ? updater(state.updateStates) : updater
+  })),
+
   // ─── Init: load from disk on app start ──────────────────────────────────
   init: async () => {
     if (get().initialized) return;
@@ -81,6 +86,7 @@ export const usePlatformStore = create((set, get) => ({
       platformId: id,
       config: {
         method: platform.method,
+        version: platform.version,
         container: platform.container,
         startScript: platform.startScript,
         cwd: platform.cwd,
