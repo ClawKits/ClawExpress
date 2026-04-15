@@ -22,10 +22,20 @@ function App() {
   const [logTarget, setLogTarget] = useState(null);
   const [configTarget, setConfigTarget] = useState(null);
   const { initAuth, isAuthModalOpen, closeAuthModal } = useAuthStore();
+  const { setDashboardUrl } = usePlatformStore();
 
   React.useEffect(() => {
     initAuth();
   }, [initAuth]);
+
+  // Global listener: platform-ready must stay alive on ALL pages, not just InstalledPage.
+  // If user navigates away during gateway startup, the event must still be captured.
+  React.useEffect(() => {
+    const cleanup = window.electron?.ipcRenderer.on('platform-ready', ({ platformId, dashboardUrl }) => {
+      setDashboardUrl(platformId, dashboardUrl);
+    });
+    return cleanup;
+  }, []);
 
   return (
     <>

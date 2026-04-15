@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Box, CheckCircle, Terminal, AlertCircle } from 'lucide-react';
+import { X, Box, CheckCircle, Terminal, AlertCircle, Loader2 } from 'lucide-react';
 import styles from './InstallModal.module.css';
 import { usePlatformStore } from '../../store/usePlatformStore';
 import { useConnectionStore } from '../../store/useConnectionStore';
@@ -9,7 +9,7 @@ import { useRequireAuth } from '../../hooks/useRequireAuth';
 
 const DockerLogo = ({ size = 24 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="#2496ED" xmlns="http://www.w3.org/2000/svg">
-    <path d="M13.983 11.278h-1.693v1.651h1.693v-1.651ZM11.168 11.278H9.475v1.651h1.693v-1.651ZM8.354 11.278H6.66v1.651h1.694v-1.651ZM16.797 11.278h-1.693v1.651h1.693v-1.651ZM13.983 8.355h-1.693v1.649h1.693V8.355ZM11.168 8.355H9.475v1.649h1.693V8.355ZM8.354 8.355H6.66v1.649h1.694V8.355ZM11.168 5.431H9.475v1.65h1.693v-1.65ZM10.534 1.761C6.273 1.761 2.82 5.215 2.82 9.475c0 4.26 3.453 7.713 7.714 7.713 4.26 0 7.714-3.453 7.714-7.713 0-4.26-3.454-7.714-7.714-7.714ZM3.315 15.65c-2.073-1.423-3.08-3.957-2.73-6.49 1.157-1.157 2.92-1.464 4.417-1.077h.03c.538-2.614 2.651-4.726 5.426-4.994.038.307.076.615.076.884v1.883h5.992c1.767-1.42 2.766-3.61 2.766-6.028v-.154h.154c1.69 0 3.338.46 4.76 1.344 1.768 5.033 1.076 10.604-1.844 15.02-3.15 4.802-8.601 7.72-14.484 7.72-1.997 0-4.033-.346-5.993-1.037.422-.768.96-1.46 1.574-2.074.883 1.42 2.535 2.38 4.418 2.38 2.805 0 5.071-2.267 5.071-5.071s-2.266-5.072-5.07-5.072c-1.884 0-3.536.96-4.418 2.38-1.15-.65-2.074-1.573-2.727-2.726Z" />
+    <path d="M13.983 11.078h2.119a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.119a.185.185 0 00-.185.185v1.888c0 .102.083.185.185.185m-2.954-5.43h2.118a.186.186 0 00.186-.186V3.574a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m0 2.716h2.118a.187.187 0 00.186-.186V6.29a.186.186 0 00-.186-.185h-2.118a.185.185 0 00-.185.185v1.887c0 .102.082.185.185.186m-2.93 0h2.12a.186.186 0 00.184-.186V6.29a.185.185 0 00-.185-.185H8.1a.185.185 0 00-.185.185v1.887c0 .102.083.185.185.186m-2.964 0h2.119a.186.186 0 00.185-.186V6.29a.185.185 0 00-.185-.185H5.136a.186.186 0 00-.186.185v1.887c0 .102.084.185.186.186m5.893 2.715h2.118a.186.186 0 00.186-.185V9.006a.186.186 0 00-.186-.186h-2.118a.185.185 0 00-.185.185v1.888c0 .102.082.185.185.185m-2.93 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.083.185.185.185m-2.964 0h2.119a.185.185 0 00.185-.185V9.006a.185.185 0 00-.184-.186h-2.12a.186.186 0 00-.186.186v1.887c0 .102.084.185.186.185m-2.92 0h2.12a.185.185 0 00.184-.185V9.006a.185.185 0 00-.184-.186h-2.12a.185.185 0 00-.184.185v1.888c0 .102.082.185.185.185M23.763 9.89c-.065-.051-.672-.51-1.954-.51-.338.001-.676.03-1.01.087-.248-1.7-1.653-2.53-1.716-2.566l-.344-.199-.226.327c-.284.438-.49.922-.612 1.43-.23.97-.09 1.882.403 2.661-.595.332-1.55.413-1.744.42H.751a.751.751 0 00-.75.748 11.376 11.376 0 00.692 4.062c.545 1.428 1.355 2.48 2.41 3.124 1.18.723 3.1 1.137 5.275 1.137.983.003 1.963-.086 2.93-.266a12.248 12.248 0 003.823-1.389c.98-.567 1.86-1.288 2.61-2.136 1.252-1.418 1.998-2.997 2.553-4.4h.221c1.372 0 2.215-.549 2.68-1.009.309-.293.55-.65.707-1.046l.098-.288Z" />
   </svg>
 );
 
@@ -21,6 +21,8 @@ const NpmLogo = ({ size = 24 }) => (
 
 const ConnectionPicker = ({ value, onChange }) => {
   const { connections, loadConnections } = useConnectionStore();
+  const [liveConnections, setLiveConnections] = useState([]);
+  const [checking, setChecking] = useState(true);
   const [selectedConnectionId, setSelectedConnectionId] = useState(value?.connectionId || '');
   const [models, setModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState(value?.model || '');
@@ -30,13 +32,48 @@ const ConnectionPicker = ({ value, onChange }) => {
   }, []);
 
   useEffect(() => {
-    if (!selectedConnectionId && connections.length > 0) {
-      setSelectedConnectionId(connections[0].id);
+    let active = true;
+    const checkLive = async () => {
+      setChecking(true);
+      const enabledConns = connections.filter(c => c.enabled !== false);
+      const promises = enabledConns.map(async (c) => {
+        if (c.category === 'cli') return c;
+        try {
+          const res = await window.electron?.ipcRenderer.invoke('verify-api-key', {
+             providerId: c.providerId,
+             apiKey: c.apiKey,
+             baseUrl: c.baseUrl
+          });
+          if (res?.valid) return c;
+          return null;
+        } catch {
+          return null;
+        }
+      });
+      const results = await Promise.all(promises);
+      const valids = results.filter(Boolean);
+      if (active) {
+        setLiveConnections(valids);
+        setChecking(false);
+      }
+    };
+    if (connections.length > 0) {
+      checkLive();
+    } else {
+      setLiveConnections([]);
+      setChecking(false);
     }
+    return () => { active = false; };
   }, [connections]);
 
   useEffect(() => {
-    const conn = connections.find(c => c.id === selectedConnectionId);
+    if (!checking && !selectedConnectionId && liveConnections.length > 0) {
+      setSelectedConnectionId(liveConnections[0].id);
+    }
+  }, [liveConnections, checking]);
+
+  useEffect(() => {
+    const conn = liveConnections.find(c => c.id === selectedConnectionId);
     if (conn) {
       setModels(conn.models || []);
       if (conn.models?.length > 0 && !conn.models.includes(selectedModel)) {
@@ -45,11 +82,11 @@ const ConnectionPicker = ({ value, onChange }) => {
         setSelectedModel('');
       }
     }
-  }, [selectedConnectionId]);
+  }, [selectedConnectionId, liveConnections]);
 
   useEffect(() => {
     if (selectedConnectionId && selectedModel) {
-      const conn = connections.find(c => c.id === selectedConnectionId);
+      const conn = liveConnections.find(c => c.id === selectedConnectionId);
       if (conn) {
         onChange({ 
           connectionId: conn.id, 
@@ -60,47 +97,52 @@ const ConnectionPicker = ({ value, onChange }) => {
         });
       }
     }
-  }, [selectedConnectionId, selectedModel]);
+  }, [selectedConnectionId, selectedModel, liveConnections]);
 
-  if (connections.length === 0) {
+  if (checking) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', background: 'var(--app-bg)', borderRadius: '6px', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: '13px', width: '100%', boxSizing: 'border-box' }}>
+        <Loader2 size={16} className={styles.spin} /> 
+        <div>Pinging connections to find live endpoints...</div>
+      </div>
+    );
+  }
+
+  if (liveConnections.length === 0) {
     return (
       <div style={{ background: 'rgba(250,204,21,0.1)', border: '1px solid #facc15', padding: '12px', borderRadius: '6px', color: 'var(--text-primary)', fontSize: '13px' }}>
-        No Connections found in your Vault. Please close this and go to the <strong>Connection Hub (Settings)</strong> to add an AI connection first.
+        No successful active Connections found in your Vault. Ensure your proxy endpoints (like LM Studio) are online and try again.
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '6px', border: '1px solid var(--border)' }}>
-      <div style={{ display: 'flex', gap: '8px' }}>
-        <Dropdown
-          value={selectedConnectionId}
-          options={connections.map(c => {
-             const p = PROVIDERS.find(p => p.id === c.providerId);
-             return { value: c.id, label: `${c.name} (${p?.label || 'Unknown'})` };
-          })}
-          onChange={setSelectedConnectionId}
-          minWidth="100%"
-        />
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'flex-start' }}>
+      <Dropdown
+        value={selectedConnectionId}
+        options={liveConnections.map(c => {
+           const p = PROVIDERS.find(p => p.id === c.providerId);
+           return { value: c.id, label: `${c.name} (${p?.label || 'Unknown'})` };
+        })}
+        onChange={setSelectedConnectionId}
+        minWidth="250px"
+      />
       
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
-        <span style={{ fontSize: '12px', color: 'var(--text-muted)', flexShrink: 0 }}>Model</span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Model</span>
         {models.length > 0 ? (
-          <div style={{ flex: 1 }}>
-            <Dropdown
-              value={selectedModel}
-              options={models}
-              onChange={setSelectedModel}
-              minWidth="100%"
-            />
-          </div>
+          <Dropdown
+            value={selectedModel}
+            options={models}
+            onChange={setSelectedModel}
+            minWidth="250px"
+          />
         ) : (
           <input 
             value={selectedModel} 
             onChange={e => setSelectedModel(e.target.value)} 
             placeholder="Type custom model name..."
-            style={{ flex: 1, padding: '8px', background: 'var(--app-bg)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: '4px', fontFamily: 'monospace' }}
+            style={{ width: '250px', padding: '6px 10px', background: 'var(--app-bg)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: '4px', fontFamily: 'monospace', fontSize: '13px' }}
           />
         )}
       </div>
@@ -113,6 +155,7 @@ const InstallModal = ({ isOpen, onClose, platform }) => {
   const [method, setMethod] = useState(''); // 'npm' | 'docker'
   const [logs, setLogs] = useState([]);
   const [installing, setInstalling] = useState(false);
+  const [preflightState, setPreflightState] = useState({ checking: false, checks: [], isSuccess: false });
   const [config, setConfig] = useState({});
   const { addPlatform } = usePlatformStore();
   const requireAuth = useRequireAuth();
@@ -120,7 +163,7 @@ const InstallModal = ({ isOpen, onClose, platform }) => {
 
   useEffect(() => {
     if (!isOpen) {
-      setStep(1); setLogs([]); setInstalling(false); setMethod('');
+      setStep(1); setLogs([]); setInstalling(false); setMethod(''); setPreflightState({ checking: false, checks: [], isSuccess: false });
     } else if (platform) {
       if (platform.configSchema) {
         const initialConfig = {};
@@ -133,6 +176,27 @@ const InstallModal = ({ isOpen, onClose, platform }) => {
       }
     }
   }, [isOpen, platform]);
+
+  useEffect(() => {
+    if (step === 2 && isOpen && method) {
+      runPreflightCheck();
+    }
+  }, [step, isOpen, method]);
+
+  const runPreflightCheck = async () => {
+    setPreflightState({ checking: true, checks: [], isSuccess: false });
+    const port = platform?.port || 18789;
+    try {
+      const res = await window.electron?.ipcRenderer.invoke('platform-preflight-check', { method, port });
+      if (res) {
+        setPreflightState({ checking: false, checks: res.checks || [], isSuccess: res.success });
+      } else {
+        setPreflightState({ checking: false, checks: [{ id: 'sys', status: 'error', text: 'Failed to communicate with backend loader.' }], isSuccess: false });
+      }
+    } catch (e) {
+      setPreflightState({ checking: false, checks: [{ id: 'sys', status: 'error', text: e.message }], isSuccess: false });
+    }
+  };
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
@@ -229,7 +293,7 @@ const InstallModal = ({ isOpen, onClose, platform }) => {
           <button className={styles.closeBtn} onClick={onClose} disabled={installing}><X size={18} /></button>
         </div>
 
-        <div className={styles.body}>
+        <div className={styles.body} style={{ overflowY: step === 3 ? 'visible' : 'auto' }}>
           <div className={styles.stepper}>
             <div className={`${styles.stepDot} ${step >= 1 ? styles.active : ''}`} />
             <div className={`${styles.stepDot} ${step >= 2 ? styles.active : ''}`} />
@@ -264,28 +328,36 @@ const InstallModal = ({ isOpen, onClose, platform }) => {
               <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '24px' }}>Verifying your system capabilities.</p>
               
               <div style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: 'var(--status-running)', fontSize: '13px' }}>
-                  <CheckCircle size={14} /> {method === 'docker' ? 'Docker daemon running' : 'Node.js v20.x detected'}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', color: 'var(--status-running)', fontSize: '13px' }}>
-                  <CheckCircle size={14} /> At least 4GB RAM available
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--status-update)', fontSize: '13px' }}>
-                  <AlertCircle size={14} /> Port {platform?.port || 18789} check completed.
-                </div>
+                {preflightState.checking ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px 0', gap: '12px' }}>
+                    <Loader2 className={styles.spin} size={24} color="var(--text-secondary)" />
+                    <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Checking system environment...</span>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {preflightState.checks.map((chk, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', color: chk.status === 'success' ? 'var(--status-running)' : 'var(--status-error)', fontSize: '13px' }}>
+                        {chk.status === 'success' ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
+                        {chk.text}
+                      </div>
+                    ))}
+                    {preflightState.checks.length === 0 && (
+                      <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>No checks performed.</div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
 
           {step === 3 && (
-            <div>
-              <h2 style={{ fontSize: '16px', marginBottom: '8px' }}>Global Configuration</h2>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '24px' }}>Set up base parameters for this instance.</p>
+            <div style={{ minHeight: '300px' }}>
+              {/* Headings removed for cleaner UI */}
               
               {!platform?.configSchema ? (
                 <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px 0' }}>No additional configuration required for this platform.</div>
               ) : (
-                platform.configSchema.map(field => {
+                platform.configSchema.filter(field => field.id !== 'channels' && field.id !== 'telegram_token').map(field => {
                   if (field.dependsOn) {
                     const depObj = field.dependsOn;
                     const depVal = config[depObj.field];
@@ -354,7 +426,9 @@ const InstallModal = ({ isOpen, onClose, platform }) => {
 
           {step === 4 && (
             <div>
-              <h2 style={{ fontSize: '16px', marginBottom: '8px' }}>Installing</h2>
+              <h2 style={{ fontSize: '16px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                Installing {installing && <Loader2 size={16} className={styles.spin} />}
+              </h2>
               <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '16px' }}>Do not close this window or disconnect from the internet.</p>
               
               <div className={styles.terminal} ref={terminalRef}>
@@ -395,7 +469,7 @@ const InstallModal = ({ isOpen, onClose, platform }) => {
               <button className={styles.btnPrimary} onClick={onClose}>Finish & Return</button>
             </div>
           ) : (
-            <button className={styles.btnPrimary} onClick={step === 3 ? requireAuth(startInstall) : handleNext} disabled={!method || (step === 3 && config?.llm_config && !config.llm_config.model)}>
+            <button className={styles.btnPrimary} onClick={step === 3 ? requireAuth(startInstall) : handleNext} disabled={!method || (step === 2 && (!preflightState.isSuccess || preflightState.checking)) || (step === 3 && config?.llm_config && !config.llm_config.model)}>
               {step === 3 ? 'Start Installation' : 'Continue'}
             </button>
           )}

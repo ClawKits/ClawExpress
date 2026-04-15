@@ -12,6 +12,7 @@ import RestartBanner from './RestartBanner';
 import UnlinkConfirmModal from './UnlinkConfirmModal';
 import GeneralTab from './GeneralTab';
 import ChatIntegrationsTab from './ChatIntegrationsTab';
+import UninstallModal from '../UninstallModal/UninstallModal';
 import styles from './ConfigPanel.module.css';
 
 const DEFAULT_SCHEMA = {
@@ -64,7 +65,7 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
   });
 
   const [saved, setSaved] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showUninstallModal, setShowUninstallModal] = useState(false);
   const [restartRequired, setRestartRequired] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -354,10 +355,8 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
     onClose();
   };
 
-  const handleDelete = () => {
-    if (!confirmDelete) { setConfirmDelete(true); return; }
-    removePlatform(platform.id);
-    onClose();
+  const handleDelete = async () => {
+    setShowUninstallModal(true);
   };
 
   const handleUnlinkConfirm = async () => {
@@ -470,7 +469,6 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
               onAddConnection={() => { setShowConnectionManager(true); setEditingConnectionId(null); }}
               onEditConnection={(id) => { setShowConnectionManager(true); setEditingConnectionId(id); }}
               platform={platform}
-              confirmDelete={confirmDelete}
               handleDelete={handleDelete}
               onClose={onClose}
             />
@@ -570,6 +568,17 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
           channel={unlinkConfirm}
           onCancel={() => setUnlinkConfirm(null)}
           onConfirm={handleUnlinkConfirm}
+        />
+      )}
+
+      {showUninstallModal && (
+        <UninstallModal
+          platform={platform}
+          onClose={() => setShowUninstallModal(false)}
+          onUninstalled={() => {
+            setShowUninstallModal(false);
+            onClose(); // Close the ConfigPanel entirely
+          }}
         />
       )}
     </>

@@ -4,7 +4,7 @@ const VALID_CHANNELS = [
   // Window
   'window-min', 'window-max', 'window-close',
   // Process
-  'platform-start', 'platform-stop', 'platform-status', 'platform-scan', 'platform-install', 'platform-send-input', 'platform-uninstall', 'platform-health-check', 'install-global-dependency',
+  'platform-start', 'platform-stop', 'platform-status', 'platform-scan', 'platform-install', 'platform-send-input', 'platform-uninstall', 'platform-health-check', 'install-global-dependency', 'platform-preflight-check',
   // Persistence
   'platforms-load', 'platforms-save', 'db-path',
   // Debug Logging

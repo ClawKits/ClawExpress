@@ -144,7 +144,7 @@ function finalizeConfig(targetDir, config, configMapping, sendLog) {
 }
 
 // ── Uninstall Helper ──────────────────────────────────────────────────────────
-async function uninstallPlatform(platformId, method, container, cwd, runningProcesses) {
+async function uninstallPlatform(platformId, method, container, cwd, runningProcesses, registryId = '') {
   const entry = runningProcesses.get(platformId);
   if (entry) {
     try { entry.process.kill('SIGTERM'); } catch (_) {}
@@ -152,21 +152,45 @@ async function uninstallPlatform(platformId, method, container, cwd, runningProc
   }
 
   const isWin = process.platform === 'win32';
+  const isOpenClaw = platformId.toLowerCase().includes('openclaw') || registryId.toLowerCase().includes('openclaw');
+
   if (method === 'docker') {
     const containerName = container || `${platformId}-clawexpress`;
     require('child_process').spawnSync('docker', ['rm', '-f', containerName]);
   } else if (method === 'npm') {
-    const ocCmd  = isWin ? 'openclaw.cmd' : 'openclaw';
-    const npmCmd = isWin ? 'npm.cmd' : 'npm';
-    log.info('[Uninstall] Stopping and removing OpenClaw gateway daemon...');
-    require('child_process').spawnSync(ocCmd, ['gateway', 'uninstall'], { stdio: 'inherit' });
-    log.info('[Uninstall] Removing openclaw global npm package...');
-    require('child_process').spawnSync(npmCmd, ['uninstall', '-g', 'openclaw'], { stdio: 'inherit' });
+    if (isOpenClaw) {
+      const ocCmd  = isWin ? 'openclaw.cmd' : 'openclaw';
+      const npmCmd = isWin ? 'npm.cmd' : 'npm';
+      
+      log.info('[Uninstall] Stopping and removing OpenClaw gateway daemon...');
+      require('child_process').spawnSync(ocCmd, ['gateway', 'uninstall'], { stdio: 'ignore', shell: isWin, windowsHide: true });
+      
+      log.info('[Uninstall] Removing openclaw global npm package...');
+      require('child_process').spawnSync(npmCmd, ['uninstall', '-g', 'openclaw'], { stdio: 'ignore', shell: isWin, windowsHide: true });
+    } else {
+      // For non-openclaw npm platforms, implement standard package uninstallation or let `cwd` deletion handle it.
+      log.info(`[Uninstall] Removing local npm directory for ${platformId}...`);
+    }
   }
 
   if (cwd && fs.existsSync(cwd)) {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
+
+  // Wipe the ~/.openclaw configuration and database directory ONLY if it's an OpenClaw platform
+  if (isOpenClaw) {
+    try {
+      const os = require('os');
+      const openclawDir = path.join(os.homedir(), '.openclaw');
+      if (fs.existsSync(openclawDir)) {
+        log.info(`[Uninstall] Wiping OpenClaw system directory: ${openclawDir}`);
+        fs.rmSync(openclawDir, { recursive: true, force: true });
+      }
+    } catch (err) {
+      log.error(`[Uninstall] Failed to remove ~/.openclaw: ${err.message}`);
+    }
+  }
+
   return { success: true };
 }
 
@@ -338,8 +362,82 @@ function registerPlatformInstallerHandlers(runningProcesses) {
     });
   });
 
-  ipcMain.handle('platform-uninstall', async (event, { platformId, method, container, cwd }) => {
-    return uninstallPlatform(platformId, method, container, cwd, runningProcesses);
+  ipcMain.handle('platform-uninstall', async (event, { platformId, method, container, cwd, registryId }) => {
+    return uninstallPlatform(platformId, method, container, cwd, runningProcesses, registryId || '');
+  });
+
+  ipcMain.handle('platform-preflight-check', async (event, { method, port }) => {
+    const checks = [];
+    let success = true;
+
+    // 1. Dependency Check
+    try {
+      if (method === 'docker') {
+        const { spawnSync } = require('child_process');
+        const res = spawnSync('docker', ['info']);
+        if (res.status === 0) {
+          checks.push({ id: 'dep', status: 'success', text: 'Docker daemon is running.' });
+        } else {
+          checks.push({ id: 'dep', status: 'error', text: 'Docker daemon is not running. Please start Docker Desktop.' });
+          success = false;
+        }
+      } else if (method === 'npm') {
+        const { spawnSync } = require('child_process');
+        const isWin = process.platform === 'win32';
+        const res = spawnSync('node', ['-v'], { shell: isWin });
+        if (res.status === 0) {
+          const ver = res.stdout.toString().trim();
+          checks.push({ id: 'dep', status: 'success', text: `Node.js ${ver} detected.` });
+        } else {
+          checks.push({ id: 'dep', status: 'error', text: 'Node.js is not installed or not in PATH. Please install Node.js.' });
+          success = false;
+        }
+      } else {
+        checks.push({ id: 'dep', status: 'success', text: `Method ${method} requires no additional global dependencies.` });
+      }
+    } catch (e) {
+      checks.push({ id: 'dep', status: 'error', text: `Dependency check failed: ${e.message}` });
+      success = false;
+    }
+
+    // 2. Memory Check
+    try {
+      const os = require('os');
+      const totalMemGB = os.totalmem() / (1024 ** 3);
+      if (totalMemGB >= 3.5) {
+        checks.push({ id: 'ram', status: 'success', text: `Memory: ${totalMemGB.toFixed(1)}GB available (Pass)` });
+      } else {
+        checks.push({ id: 'ram', status: 'error', text: `Memory: ${totalMemGB.toFixed(1)}GB detected. At least 4GB is recommended.` });
+        success = false;
+      }
+    } catch (e) {
+      checks.push({ id: 'ram', status: 'error', text: 'Failed to verify system memory.' });
+      success = false;
+    }
+
+    // 3. Port Check
+    try {
+      const net = require('net');
+      const targetPort = port || 18789;
+      const isPortAvailable = await new Promise((resolve) => {
+        const srv = net.createServer();
+        srv.once('error', () => resolve(false));
+        srv.once('listening', () => { srv.close(); resolve(true); });
+        srv.listen(targetPort, '127.0.0.1');
+      });
+
+      if (isPortAvailable) {
+        checks.push({ id: 'port', status: 'success', text: `Port ${targetPort} is available.` });
+      } else {
+        checks.push({ id: 'port', status: 'error', text: `Port ${targetPort} is currently in use. Please free this port first.` });
+        success = false;
+      }
+    } catch (e) {
+      checks.push({ id: 'port', status: 'error', text: `Port verification failed: ${e.message}` });
+      success = false;
+    }
+
+    return { success, checks };
   });
 
   log.info('[platformInstaller] IPC handlers registered.');

@@ -101,6 +101,10 @@ export const usePlatformStore = create((set, get) => ({
         )
       }));
       get().persist();
+      // dashboardUrl is set exclusively by the 'platform-ready' IPC event (App.jsx listener),
+      // which is emitted by processManager only after confirming HTTP 200 from the gateway.
+      // DO NOT poll platform-health-check here — it uses TCP probe which is too shallow
+      // and causes the Dashboard button to appear before the gateway is actually ready.
     } else {
       if (result?.reason === 'NPM_MISSING_DEPENDENCY') {
         set({ missingNpmDependencyFor: id });

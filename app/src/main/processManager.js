@@ -9,7 +9,138 @@ const log             = require('./logger');
 
 const runningProcesses = new Map();
 
-function spawnPlatform(platformId, config, webContents) {
+// ── Helper: fire-and-forget async process spawn (never blocks main thread) ──
+function fireSpawn(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    try {
+      const p = spawn(cmd, args, { windowsHide: true, stdio: 'ignore', ...opts });
+      const t = setTimeout(() => { try { p.kill(); } catch (_) {} resolve(); }, opts.timeout || 6000);
+      p.on('close', () => { clearTimeout(t); resolve(); });
+      p.on('error', () => { clearTimeout(t); resolve(); });
+    } catch (_) { resolve(); }
+  });
+}
+
+// ── Helper: patch openclaw.json to add all loopback origins and clean fake plugins ──
+function patchOpenClawOriginsAndCleanPlugins(port) {
+  try {
+    const cfgPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+    if (!fs.existsSync(cfgPath)) return;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    let modified = false;
+
+    if (!cfg.gateway) cfg.gateway = {};
+    if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
+    const required = [
+      `http://localhost:${port}`,
+      `http://127.0.0.1:${port}`,
+      `http://[::1]:${port}`,
+    ];
+    const existing = cfg.gateway.controlUi.allowedOrigins || [];
+    const merged = [...new Set([...existing, ...required])];
+    if (merged.length !== existing.length) {
+      cfg.gateway.controlUi.allowedOrigins = merged;
+      modified = true;
+    }
+
+    // V2: channels and providers are NOT plugins. 
+    // If they exist in plugins.entries due to manual config or V1 caching, openclaw will fail to load them as plugins.
+    if (cfg.plugins && cfg.plugins.entries) {
+      const fakePlugins = ['whatsapp', 'zalo', 'zalouser', 'telegram', 'discord', 'litellm'];
+      let cleaned = false;
+      for (const fake of fakePlugins) {
+        if (cfg.plugins.entries[fake]) {
+          delete cfg.plugins.entries[fake];
+          modified = true;
+        }
+      }
+    }
+
+    if (modified) {
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+    }
+  } catch (_) {}
+}
+
+// ── Helper: kill zombie gateway processes without blocking Electron main thread ──
+async function killZombiesAsync(isWin, targetPort) {
+  if (isWin) {
+    // Step 1: polite CLI stop
+    await fireSpawn('cmd.exe', ['/c', 'openclaw.cmd', 'gateway', 'stop'], { timeout: 4000 });
+    // Step 2: kill by port ownership (most accurate)
+    await fireSpawn('powershell', [
+      '-Command',
+      `Get-NetTCPConnection -LocalPort ${targetPort} -State Listen -ErrorAction SilentlyContinue | ` +
+      `Select-Object -ExpandProperty OwningProcess -Unique | ` +
+      `ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }`
+    ], { timeout: 3000 });
+    // Step 3: WMI fallback by commandline pattern
+    await fireSpawn('powershell', [
+      '-Command',
+      `Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%openclaw%gateway%'" | ` +
+      `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
+    ], { timeout: 3000 });
+  } else {
+    await fireSpawn('openclaw', ['gateway', 'stop'], { timeout: 4000 });
+    await fireSpawn('sh', ['-c', `lsof -ti :${targetPort} | xargs kill -9 2>/dev/null || true`], { timeout: 3000 });
+    await fireSpawn('pkill', ['-f', 'openclaw.*gateway'], { timeout: 3000 });
+  }
+}
+
+// ── Helper: poll HTTP until gateway is ready, then emit platform-ready ──
+function startGatewayReadyPoller({ platformId, port, sendLog, maxRetries = 45, intervalMs = 1500 }) {
+  let attempts = 0;
+
+  const readToken = () => {
+    try {
+      const cfgPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        return cfg?.gateway?.auth?.token || null;
+      }
+    } catch (_) {}
+    return null;
+  };
+
+  const notifyReady = (token) => {
+    const dashboardUrl = `http://127.0.0.1:${port}/?token=${token}`;
+    sendLog(`[SYSTEM] Gateway ready! Opening dashboard: ${dashboardUrl}`);
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('platform-ready', { platformId, dashboardUrl });
+    }
+  };
+
+  const poll = () => {
+    if (attempts++ >= maxRetries) {
+      sendLog('[SYSTEM] Gateway readiness timeout. Check Console for errors.');
+      return;
+    }
+
+    const token = readToken();
+    if (!token) {
+      // Token not written yet — gateway still starting; retry
+      setTimeout(poll, intervalMs);
+      return;
+    }
+
+    const req = http.get(`http://127.0.0.1:${port}/`, (res) => {
+      notifyReady(token);
+    });
+
+    req.on('error', () => setTimeout(poll, intervalMs));
+
+    // If socket hangs (no response), destroy and retry
+    req.setTimeout(1200, () => {
+      req.destroy();
+      setTimeout(poll, intervalMs);
+    });
+  };
+
+  poll();
+}
+
+async function spawnPlatform(platformId, config, webContents) {
   if (runningProcesses.has(platformId)) return { success: false, reason: 'Already running' };
 
   const sendLog = (msg) => {
@@ -19,53 +150,6 @@ function spawnPlatform(platformId, config, webContents) {
   };
 
   let child;
-
-  // ── Background channel registration (non-blocking) ────────────────────
-  // QR-based channels (zalouser, whatsapp) need the GLOBAL extension
-  // (at ~/.openclaw/extensions/) not the bundled plugin (which lacks gateway
-  // methods like loginWithQrStart).
-  // A flag file prevents re-running on every startup, UNLESS the extension
-  // directories are missing — in that case force re-registration regardless.
-  // This must run REGARDLESS of PC/Docker mode because the host CLI always handles QR login!
-  const pluginFlagFile = path.join(app.getPath('userData'), '.channel-plugins-registered');
-  const QR_CHANNELS = ['zalouser', 'whatsapp'];
-  const openclawExtDir = path.join(os.homedir(), '.openclaw', 'extensions');
-  const anyExtensionMissing = QR_CHANNELS.some(ch => {
-    const extPath = path.join(openclawExtDir, ch);
-    return !fs.existsSync(extPath) || fs.readdirSync(extPath).length === 0;
-  });
-  const isWin = process.platform === 'win32';
-  if (!fs.existsSync(pluginFlagFile) || anyExtensionMissing) {
-    if (anyExtensionMissing) sendLog('[SYSTEM] Extension(s) missing — forcing plugin re-registration...');
-    const regEnv = { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0', CI: '1' };
-
-    sendLog('[SYSTEM] Background: registering QR channel plugins (one-time)...');
-    Promise.allSettled(
-      QR_CHANNELS.map(ch =>
-        new Promise((resolve) => {
-          const regProc = isWin
-            ? require('child_process').spawn('cmd.exe', ['/c', 'openclaw', 'channels', 'add', '--channel', ch, '--skip-login'], { env: regEnv, windowsHide: true })
-            : require('child_process').spawn('openclaw', ['channels', 'add', '--channel', ch, '--skip-login'], { env: regEnv, windowsHide: true });
-          // Auto-confirm any prompts with Enter
-          const sendEnter = () => {
-            try { if (regProc.stdin && !regProc.stdin.destroyed) regProc.stdin.write('\r\n'); } catch (_) {}
-          };
-          setTimeout(sendEnter, 500);
-          setTimeout(sendEnter, 1500);
-          setTimeout(sendEnter, 3000);
-          regProc.on('close', (code) => {
-            sendLog(`[SYSTEM] Channel ${ch} registered (exit ${code})`);
-            resolve(code);
-          });
-          regProc.on('error', () => resolve(-1));
-          setTimeout(() => { try { regProc.kill(); } catch (_) {} resolve(-99); }, 30000);
-        })
-      )
-    ).then(() => {
-      try { fs.writeFileSync(pluginFlagFile, new Date().toISOString(), 'utf8'); } catch (_) {}
-      sendLog('[SYSTEM] Channel plugins ready.');
-    });
-  }
 
   try {
     const isWin = process.platform === 'win32';
@@ -189,18 +273,21 @@ function spawnPlatform(platformId, config, webContents) {
        // Config: uses default ~/.openclaw/openclaw.json (single source of truth).
        scriptArr = ['openclaw', 'gateway', '--allow-unconfigured'];
 
-       sendLog(`[SYSTEM] Pre-flight: Hard-killing any zombie openclaw instances...`);
-       try {
-         if (isWin) {
-           // Invoke-CimMethod Terminate sends WM_CLOSE which Node.js ignores.
-           // Stop-Process -Force is equivalent to taskkill /F and reliably kills the process.
-           require('child_process').spawnSync('powershell', ['-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\.js|openclaw\.mjs).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"], { timeout: 8000, windowsHide: true });
-         } else {
-           require('child_process').spawnSync('pkill', ['-f', '.*openclaw.*(index\.js|openclaw\.mjs).*'], { timeout: 5000 });
-         }
-       } catch (e) { }
+       const targetPort = config.port || 18789;
 
-       sendLog(`[SYSTEM] NPM mode: starting OpenClaw gateway (foreground)...`);
+       // ── Step 1: Patch allowedOrigins for all loopback variants (sync, fast) ──
+       // Windows resolves 'localhost' to IPv6 (::1). If ::1 is missing from
+       // allowedOrigins, OpenClaw rejects the WebSocket upgrade → chat echo delay.
+       patchOpenClawOriginsAndCleanPlugins(targetPort);
+
+       // ── Step 2: Kill zombie gateway processes (async, non-blocking) ──
+       // Runs in background so Electron main thread stays responsive (no "Not Responding").
+       // The gateway is spawned immediately after; if a zombie still holds the port,
+       // openclaw will attach to stdout of the existing process instead of failing.
+       sendLog(`[SYSTEM] Pre-flight: killing any zombie openclaw instances...`);
+       await killZombiesAsync(isWin, targetPort);
+
+       sendLog(`[SYSTEM] NPM mode: starting OpenClaw gateway...`);
     } else {
        if (scriptArr.length === 0) scriptArr = ['npm', 'start'];
     }
@@ -224,11 +311,9 @@ function spawnPlatform(platformId, config, webContents) {
     } catch (_) {}
 
     // Gateway uses default ~/.openclaw/openclaw.json — single source of truth.
-    // No OPENCLAW_CONFIG_PATH override needed.
+    // HOST is intentionally NOT overridden: forcing 127.0.0.1 (IPv4-only) breaks
+    // Chrome's IPv6 WebSocket connections, causing message echo delay in the chat UI.
     const spawnEnv = { ...process.env, ...ssotEnv, ...(config.env || {}) };
-    if (config.method === 'npm') {
-      spawnEnv.HOST = '127.0.0.1'; // Force strictly IPv4 loopback for security, preventing LAN access
-    }
 
     sendLog(`[SYSTEM] Starting: ${cmd} ${scriptArr.slice(1).join(' ')}`);
 
@@ -247,63 +332,39 @@ function spawnPlatform(platformId, config, webContents) {
 
     sendLog(`[SYSTEM] Process started (PID: ${child.pid})`);
 
-    // ── Token detection for npm-based platforms (e.g. OpenClaw) ────────────
-    // Watch stdout for signals that the gateway is starting, then poll
-    // the HTTP server until it is fully ready to serve the UI.
+    // ── Gateway readiness detection (NPM mode) ────────────────────────────
+    // Strategy: parse stdout for startup signals, then poll HTTP endpoint.
+    // The poller is also started unconditionally after a short delay to handle
+    // the "attach to existing" case where no startup signals are ever emitted.
     let gatewayReadyEmitted = false;
-    let gatewayPollerActive = false;
-    const startGatewayPoller = () => {
-      if (gatewayPollerActive || gatewayReadyEmitted) return;
-      gatewayPollerActive = true;
+    let pollerStarted = false;
 
-      const poll = () => {
-        if (gatewayReadyEmitted || !runningProcesses.has(platformId)) return;
-        
-        const configLoc = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-        
-        let token;
-        try {
-          if (fs.existsSync(configLoc)) {
-            const cfg = JSON.parse(fs.readFileSync(configLoc, 'utf8'));
-            token = cfg?.gateway?.auth?.token;
-          }
-        } catch (_) {}
-
-        if (!token) {
-          setTimeout(poll, 1500);
-          return;
-        }
-
-        const port = config.port || 18789;
-        const dashboardUrl = `http://127.0.0.1:${port}/?token=${token}`;
-        const pollUrl = `http://127.0.0.1:${port}/`;
-
-        const req = http.get(pollUrl, (res) => {
-           gatewayReadyEmitted = true;
-           sendLog(`[SYSTEM] Gateway UI fully ready! Dashboard: ${dashboardUrl}`);
-           const win = BrowserWindow.getAllWindows()[0];
-           if (win && !win.isDestroyed()) {
-             win.webContents.send('platform-ready', { platformId, dashboardUrl });
-           }
-        }).on('error', (err) => {
-           setTimeout(poll, 1500);
-        });
-
-        // Add timeout to prevent hanging connections
-        req.setTimeout(1000, () => {
-           req.destroy();
-        });
-      };
-      
-      poll();
+    const maybeStartPoller = () => {
+      if (pollerStarted || gatewayReadyEmitted) return;
+      pollerStarted = true;
+      startGatewayReadyPoller({
+        platformId,
+        port: config.port || 18789,
+        sendLog,
+        maxRetries: 45,
+        intervalMs: 1500,
+      });
     };
 
     child.stdout.on('data', (data) => {
       const text = data.toString();
       text.split('\n').filter(Boolean).forEach(line => sendLog(line));
-      // Detect gateway startup signals in logs
-      if (!gatewayReadyEmitted && (text.includes('[gateway]') || text.includes('[heartbeat]'))) {
-        startGatewayPoller();
+
+      // ONLY start polling HTTP (to fetch the token and verify the API is up)
+      // when the gateway explicitly announces it is ready or attached. 
+      // Do not use generic strings like '[gateway]' as it starts too early.
+      if (!gatewayReadyEmitted && (
+        text.includes('Waiting for incoming connections') ||
+        text.includes('Process already running') ||
+        text.includes('[gateway] ready') ||
+        text.includes('host mounted at')
+      )) {
+        maybeStartPoller();
       }
     });
 
@@ -314,9 +375,13 @@ function spawnPlatform(platformId, config, webContents) {
     child.on('exit', (code) => {
       sendLog(`[SYSTEM] Process exited with code ${code}`);
       runningProcesses.delete(platformId);
-      const win = BrowserWindow.getAllWindows()[0];
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('platform-status-change', { platformId, status: 'STOPPED' });
+      // If the poller already started, gateway may be running externally (attach mode).
+      // Don't send STOPPED because the HTTP poller will confirm the real state.
+      if (!pollerStarted) {
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('platform-status-change', { platformId, status: 'STOPPED' });
+        }
       }
     });
 
@@ -398,11 +463,11 @@ function stopPlatform(platformId, webContents, method, container) {
         sendLog(`[SYSTEM] Sweeping orphaned openclaw.mjs processes...`);
         require('child_process').spawnSync(
           'powershell',
-          ['-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\.js|openclaw\.mjs).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+          ['-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\\.js|openclaw\\.mjs).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
           { timeout: 8000, windowsHide: true }
         );
       } else {
-        require('child_process').spawnSync('pkill', ['-f', '.*openclaw.*(index\.js|openclaw\.mjs).*'], { timeout: 5000 });
+        require('child_process').spawnSync('pkill', ['-f', '.*openclaw.*(index\\.js|openclaw\\.mjs).*'], { timeout: 5000 });
       }
     } else {
       if (!entry) return { success: false, reason: 'Not running' };
@@ -418,5 +483,3 @@ function stopPlatform(platformId, webContents, method, container) {
 }
 
 module.exports = { runningProcesses, spawnPlatform, stopPlatform };
-
-  

@@ -34,7 +34,6 @@ const GeneralTab = ({
   onAddConnection,
   onEditConnection,
   platform,
-  confirmDelete,
   handleDelete,
   onClose,
 }) => {
@@ -342,7 +341,7 @@ const GeneralTab = ({
       <div className={styles.dangerTitle}>Danger Zone</div>
       <div className={styles.dangerDesc}>Removing this platform will delete it from ClawExpress.</div>
       <button className={styles.btnDanger} onClick={handleDelete}>
-        {confirmDelete ? 'Click again to confirm removal' : `Remove ${platform.name}`}
+        Remove {platform.name}
       </button>
     </div>
   </>
