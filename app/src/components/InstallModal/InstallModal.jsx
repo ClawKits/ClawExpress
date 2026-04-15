@@ -150,7 +150,7 @@ const ConnectionPicker = ({ value, onChange }) => {
   );
 };
 
-const InstallModal = ({ isOpen, onClose, platform }) => {
+const InstallModal = ({ isOpen, onClose, platform, onInstalled }) => {
   const [step, setStep] = useState(1);
   const [method, setMethod] = useState(''); // 'npm' | 'docker'
   const [logs, setLogs] = useState([]);
@@ -466,7 +466,7 @@ const InstallModal = ({ isOpen, onClose, platform }) => {
             )
           ) : step === 5 ? (
             <div style={{ display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end' }}>
-              <button className={styles.btnPrimary} onClick={onClose}>Finish & Return</button>
+              <button className={styles.btnPrimary} onClick={onInstalled || onClose}>Go to Installed</button>
             </div>
           ) : (
             <button className={styles.btnPrimary} onClick={step === 3 ? requireAuth(startInstall) : handleNext} disabled={!method || (step === 2 && (!preflightState.isSuccess || preflightState.checking)) || (step === 3 && config?.llm_config && !config.llm_config.model)}>

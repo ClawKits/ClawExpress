@@ -21,7 +21,7 @@ const SkeletonCard = () => (
   </div>
 );
 
-const Marketplace = () => {
+const Marketplace = ({ onNavigate }) => {
   const { marketplace, marketplaceStatus, fetchMarketplace, platforms, getConflictFor } = usePlatformStore();
   const requireAuth = useRequireAuth();
   const [installTarget, setInstallTarget] = useState(null);
@@ -281,7 +281,7 @@ const Marketplace = () => {
         )}
       </div>
 
-      <InstallModal isOpen={isInstallOpen} onClose={() => setIsInstallOpen(false)} platform={installTarget} />
+      <InstallModal isOpen={isInstallOpen} onClose={() => setIsInstallOpen(false)} platform={installTarget} onInstalled={() => { setIsInstallOpen(false); onNavigate?.('installed'); }} />
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

@@ -11,6 +11,19 @@ const fs   = require('fs');
 const path = require('path');
 const log  = require('./logger');
 
+// ── Async fire-and-forget spawn (never blocks main thread) ───────────────────
+// Replaces spawnSync throughout uninstall flow so Electron stays responsive.
+function runCmd(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    try {
+      const p = spawn(cmd, args, { stdio: 'ignore', windowsHide: true, ...opts });
+      const t = setTimeout(() => { try { p.kill(); } catch (_) {} resolve(); }, opts.timeout || 8000);
+      p.on('close', () => { clearTimeout(t); resolve(); });
+      p.on('error', () => { clearTimeout(t); resolve(); });
+    } catch (_) { resolve(); }
+  });
+}
+
 // ── Config compiler ───────────────────────────────────────────────────────────
 // Evaluates {{expr}} templates inside an install config object
 function compileTemplate(template, context) {
@@ -144,47 +157,72 @@ function finalizeConfig(targetDir, config, configMapping, sendLog) {
 }
 
 // ── Uninstall Helper ──────────────────────────────────────────────────────────
-async function uninstallPlatform(platformId, method, container, cwd, runningProcesses, registryId = '') {
+async function uninstallPlatform(platformId, method, container, cwd, runningProcesses, registryId = '', wipeConfig = false) {
+  const isWin = process.platform === 'win32';
+  const isOpenClaw = platformId.toLowerCase().includes('openclaw') || registryId.toLowerCase().includes('openclaw');
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // ── Step 1: Kill the tracked process ────────────────────────────────────────
+  // On Windows, SIGTERM is a no-op for child processes. Use taskkill /F /T instead
+  // to force-terminate the entire process tree before touching any files.
   const entry = runningProcesses.get(platformId);
   if (entry) {
-    try { entry.process.kill('SIGTERM'); } catch (_) {}
+    const pid = entry.process.pid;
+    if (isWin) {
+      await runCmd('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 5000 });
+    } else {
+      try { process.kill(-pid, 'SIGTERM'); } catch (_) { try { entry.process.kill('SIGTERM'); } catch (_) {} }
+    }
     runningProcesses.delete(platformId);
   }
 
-  const isWin = process.platform === 'win32';
-  const isOpenClaw = platformId.toLowerCase().includes('openclaw') || registryId.toLowerCase().includes('openclaw');
+  // ── Step 2: Kill any zombies that survived (or were from previous sessions) ──
+  // Must complete before npm uninstall or docker rm to avoid file-lock failures.
+  if (method === 'npm' && isOpenClaw) {
+    log.info('[Uninstall] Sweeping zombie openclaw processes...');
+    if (isWin) {
+      await runCmd('cmd.exe', ['/c', 'openclaw.cmd', 'gateway', 'stop'], { timeout: 4000 });
+      await runCmd('powershell', [
+        '-Command',
+        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\\.js|openclaw\\.mjs|gateway).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+      ], { timeout: 6000 });
+    } else {
+      await runCmd('openclaw', ['gateway', 'stop'], { timeout: 4000 });
+      await runCmd('sh', ['-c', "pkill -f 'openclaw.*(gateway|index\\.js|openclaw\\.mjs)' 2>/dev/null || true"], { timeout: 3000 });
+    }
+    // Give OS time to release file handles before npm uninstall
+    await wait(1500);
+  }
 
+  // ── Step 3: Method-specific removal ─────────────────────────────────────────
   if (method === 'docker') {
     const containerName = container || `${platformId}-clawexpress`;
-    require('child_process').spawnSync('docker', ['rm', '-f', containerName]);
+    await runCmd('docker', ['rm', '-f', containerName], { timeout: 15000 });
   } else if (method === 'npm') {
     if (isOpenClaw) {
-      const ocCmd  = isWin ? 'openclaw.cmd' : 'openclaw';
       const npmCmd = isWin ? 'npm.cmd' : 'npm';
-      
-      log.info('[Uninstall] Stopping and removing OpenClaw gateway daemon...');
-      require('child_process').spawnSync(ocCmd, ['gateway', 'uninstall'], { stdio: 'ignore', shell: isWin, windowsHide: true });
-      
       log.info('[Uninstall] Removing openclaw global npm package...');
-      require('child_process').spawnSync(npmCmd, ['uninstall', '-g', 'openclaw'], { stdio: 'ignore', shell: isWin, windowsHide: true });
+      await runCmd(npmCmd, ['uninstall', '-g', 'openclaw'], { shell: isWin, timeout: 30000 });
     } else {
-      // For non-openclaw npm platforms, implement standard package uninstallation or let `cwd` deletion handle it.
       log.info(`[Uninstall] Removing local npm directory for ${platformId}...`);
     }
   }
 
+  // ── Step 4: Delete platform working directory ────────────────────────────────
   if (cwd && fs.existsSync(cwd)) {
-    fs.rmSync(cwd, { recursive: true, force: true });
+    await fs.promises.rm(cwd, { recursive: true, force: true });
   }
 
-  // Wipe the ~/.openclaw configuration and database directory ONLY if it's an OpenClaw platform
-  if (isOpenClaw) {
+  // ── Step 5: Wipe ~/.openclaw (only if user explicitly opted in) ─────────────
+  // Default is false — skipping keeps config intact for other installed platforms
+  // (e.g. removing NPM mode while Docker mode is still active, or vice versa).
+  if (isOpenClaw && wipeConfig) {
     try {
       const os = require('os');
       const openclawDir = path.join(os.homedir(), '.openclaw');
       if (fs.existsSync(openclawDir)) {
         log.info(`[Uninstall] Wiping OpenClaw system directory: ${openclawDir}`);
-        fs.rmSync(openclawDir, { recursive: true, force: true });
+        await fs.promises.rm(openclawDir, { recursive: true, force: true });
       }
     } catch (err) {
       log.error(`[Uninstall] Failed to remove ~/.openclaw: ${err.message}`);
@@ -362,8 +400,8 @@ function registerPlatformInstallerHandlers(runningProcesses) {
     });
   });
 
-  ipcMain.handle('platform-uninstall', async (event, { platformId, method, container, cwd, registryId }) => {
-    return uninstallPlatform(platformId, method, container, cwd, runningProcesses, registryId || '');
+  ipcMain.handle('platform-uninstall', async (event, { platformId, method, container, cwd, registryId, wipeConfig }) => {
+    return uninstallPlatform(platformId, method, container, cwd, runningProcesses, registryId || '', wipeConfig === true);
   });
 
   ipcMain.handle('platform-preflight-check', async (event, { method, port }) => {

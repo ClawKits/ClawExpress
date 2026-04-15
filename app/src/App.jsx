@@ -46,7 +46,7 @@ function App() {
         {activePage === 'dashboard' ? (
           <Dashboard onNavigate={setActivePage} />
         ) : activePage === 'marketplace' ? (
-          <Marketplace />
+          <Marketplace onNavigate={setActivePage} />
         ) : activePage === 'skills' ? (
           <SkillsPage />
         ) : activePage === 'settings' ? (

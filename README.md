@@ -54,11 +54,10 @@ Depending on how you choose to run the OpenClaw Gateway (Native vs. Isolated), p
 **1. For Native Runtime (NPM)**
 - **OS**: Windows 10/11, macOS 12+, or Linux.
 - **Environment**: [Node.js](https://nodejs.org/en/) (v18.0.0 or higher) and NPM.
-- **Requirement**: The OpenClaw CLI must be installed globally on your machine (`npm install -g openclaw`).
 
-**2. For Isolated Runtime (Docker / Podman)**
+**2. For Isolated Runtime (Docker / Podman / OrbStack)**
 - **OS**: Windows 10/11 (with WSL2/Hyper-V), macOS, or Linux.
-- **Engine**: **Docker Desktop** OR **Podman** (configured with Docker CLI compatibility/alias).
+- **Engine**: **Docker Desktop** OR **Podman** (configured with Docker CLI compatibility/alias) OR **OrbStack** (macOS).
 - **Requirement**: The container daemon must be running in the background before hitting 'Start' in ClawExpress.
 
 **3. To Build ClawExpress from Source (Developers)**
@@ -127,10 +126,26 @@ ClawExpress connects external messaging channels (Zalo, WhatsApp, Telegram) with
 - Choose between **Docker Mode** (Recommended for isolation) or **Native Mode**.
 - Click the **Start Gateway** button (Power Icon). The dashboard will indicate a green status when the WebSocket RPC is healthy.
 
-### 2. Linking Channels (Zalo & WhatsApp)
+### 2. Linking Channels
+
+#### Zalo & WhatsApp (QR Code)
 - Go to the **Channel Settings** for Zalo or WhatsApp.
 - Click **Link Account**. ClawExpress will automatically negotiate with the Gateway (pausing it if necessary to avoid SQLite locks) and extract the pairing QR Code.
 - Scan the QR code using your Zalo or WhatsApp mobile app. Once scanned, the channel is permanently linked.
+
+#### Telegram (Bot Token)
+1. Open Telegram and start a chat with [@BotFather](https://t.me/BotFather).
+2. Send `/newbot` and follow the prompts to create a bot. Copy the **Bot Token** (format: `123456789:ABCdef...`).
+3. In ClawExpress, go to **Settings → Channels → Telegram** and paste the Bot Token.
+4. Click **Save**. The Gateway will restart and your Telegram bot will begin responding to messages.
+
+#### Discord (Bot Token)
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create a **New Application**.
+2. Navigate to the **Bot** tab → click **Reset Token** and copy the token.
+3. Under **Privileged Gateway Intents**, enable **Message Content Intent**.
+4. Go to **OAuth2 → URL Generator**, select scopes `bot` + permissions `Send Messages`, `Read Message History`. Open the generated URL to invite the bot to your server.
+5. In ClawExpress, go to **Settings → Channels → Discord** and paste the Bot Token.
+6. Click **Save**. The bot will come online in your Discord server.
 
 ### 3. Safety & Pairing Mode
 By default, new channels are placed into **Pairing Mode** to prevent unauthorized messages from hitting your API keys.

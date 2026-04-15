@@ -21,8 +21,74 @@ function fireSpawn(cmd, args, opts = {}) {
   });
 }
 
-// ── Helper: patch openclaw.json to add all loopback origins and clean fake plugins ──
-function patchOpenClawOriginsAndCleanPlugins(port) {
+// ── Helper: recursively remove config values that contain Docker-internal paths ──
+// When switching from Docker → NPM, openclaw.json may still contain absolute paths
+// written by the container (e.g. /home/node/.openclaw). On the host, OpenClaw reads
+// these as the base dir then path.join()s the real host path onto it, producing a
+// doubled path like "C:\home\node\.openclaw\...\C:\Users\...\..." → ENOENT.
+function removeDockerPaths(obj, dockerBase) {
+  if (!obj || typeof obj !== 'object') return false;
+  let modified = false;
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (typeof val === 'string' && val.includes(dockerBase)) {
+      delete obj[key];
+      modified = true;
+    } else if (val && typeof val === 'object' && !Array.isArray(val)) {
+      if (removeDockerPaths(val, dockerBase)) modified = true;
+    }
+  }
+  return modified;
+}
+
+// ── Helper: fix corrupted sessionFile paths in agents/*/sessions/sessions.json ──
+// Docker writes sessionFile with a container-internal base path (/home/node/.openclaw).
+// On Windows host, Node resolves this as C:\home\node\.openclaw and then path.join()s
+// the real host path onto it → doubled path → ENOENT on every session write.
+// Fix: for each session entry whose sessionFile contains a Docker path, rebuild it
+// using just the UUID filename and the correct host sessions directory.
+function fixSessionFilePaths(openclawDir) {
+  try {
+    const agentsDir = path.join(openclawDir, 'agents');
+    if (!fs.existsSync(agentsDir)) return;
+
+    for (const agentName of fs.readdirSync(agentsDir)) {
+      const sessionsJson = path.join(agentsDir, agentName, 'sessions', 'sessions.json');
+      if (!fs.existsSync(sessionsJson)) continue;
+
+      try {
+        const sessions = JSON.parse(fs.readFileSync(sessionsJson, 'utf8'));
+        const sessionsDir = path.join(agentsDir, agentName, 'sessions');
+        let modified = false;
+
+        for (const session of Object.values(sessions)) {
+          if (
+            session.sessionFile &&
+            (session.sessionFile.includes('\\home\\node\\') ||
+             session.sessionFile.includes('/home/node/'))
+          ) {
+            // Reconstruct with correct host path: preserve only the UUID filename
+            session.sessionFile = path.join(sessionsDir, path.basename(session.sessionFile));
+            modified = true;
+          }
+        }
+
+        if (modified) {
+          fs.writeFileSync(sessionsJson, JSON.stringify(sessions, null, 2), 'utf8');
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+// ── Helper: prepare openclaw.json for NPM (host) mode ──
+// Cleans up any Docker-specific settings that would break host execution:
+//   • Fixes corrupted sessionFile paths in sessions.json (Docker path doubling)
+//   • Removes stale Docker-internal paths (/home/node/) → prevents path doubling
+//   • Resets gateway.bind from 'lan' back to default loopback
+//   • Patches allowedOrigins for all loopback variants (IPv4/IPv6)
+//   • Removes fake plugin entries left over from V1 or Docker runs
+function prepareConfigForNpm(port) {
   try {
     const cfgPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
     if (!fs.existsSync(cfgPath)) return;
@@ -30,6 +96,15 @@ function patchOpenClawOriginsAndCleanPlugins(port) {
     let modified = false;
 
     if (!cfg.gateway) cfg.gateway = {};
+
+    // Reset bind: Docker needs 'lan'; NPM on host must use default loopback.
+    if (cfg.gateway.bind === 'lan') {
+      delete cfg.gateway.bind;
+      modified = true;
+    }
+
+    // Patch allowedOrigins so all loopback variants are accepted.
+    // Windows resolves 'localhost' → ::1; missing entries cause WS upgrade rejection.
     if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
     const required = [
       `http://localhost:${port}`,
@@ -43,17 +118,51 @@ function patchOpenClawOriginsAndCleanPlugins(port) {
       modified = true;
     }
 
-    // V2: channels and providers are NOT plugins. 
+    // Fix corrupted sessionFile paths in agents/*/sessions/sessions.json.
+    fixSessionFilePaths(path.join(os.homedir(), '.openclaw'));
+
+    // Remove stale Docker-internal paths (e.g. /home/node/.openclaw) that cause
+    // path doubling when OpenClaw runs in NPM mode on the host.
+    if (removeDockerPaths(cfg, '/home/node/')) modified = true;
+
+    // V2: channels and providers are NOT plugins.
     // If they exist in plugins.entries due to manual config or V1 caching, openclaw will fail to load them as plugins.
     if (cfg.plugins && cfg.plugins.entries) {
       const fakePlugins = ['whatsapp', 'zalo', 'zalouser', 'telegram', 'discord', 'litellm'];
-      let cleaned = false;
       for (const fake of fakePlugins) {
         if (cfg.plugins.entries[fake]) {
           delete cfg.plugins.entries[fake];
           modified = true;
         }
       }
+    }
+
+    if (modified) {
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+    }
+  } catch (_) {}
+}
+
+// ── Helper: prepare openclaw.json for Docker mode ──
+// Sets gateway.bind = 'lan' so the container's port mapping reaches the host.
+// NPM-specific settings (loopback-only bind) would break Docker networking.
+function prepareConfigForDocker(openclawDir) {
+  try {
+    const cfgPath = path.join(openclawDir, 'openclaw.json');
+    if (!fs.existsSync(cfgPath)) return;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    let modified = false;
+
+    if (!cfg.gateway) cfg.gateway = {};
+
+    // Remove stale Docker-internal paths left by a previous container run to
+    // avoid path doubling if the user ever switches back to NPM without stopping.
+    if (removeDockerPaths(cfg, '/home/node/')) modified = true;
+
+    // Force LAN bind so Docker port mapping (-p host:18789) can reach the gateway.
+    if (cfg.gateway.bind !== 'lan') {
+      cfg.gateway.bind = 'lan';
+      modified = true;
     }
 
     if (modified) {
@@ -192,18 +301,8 @@ async function spawnPlatform(platformId, config, webContents) {
           fs.mkdirSync(openclawDir, { recursive: true });
        }
        
-       // Ensure OpenClaw binds to 'lan' instead of 'loopback' so that container port mapping works
-       const openclawConfPath = path.join(openclawDir, 'openclaw.json');
-       if (fs.existsSync(openclawConfPath)) {
-           try {
-               let confData = JSON.parse(fs.readFileSync(openclawConfPath, 'utf8'));
-               if (!confData.gateway) confData.gateway = {};
-               if (confData.gateway.bind !== 'lan') {
-                   confData.gateway.bind = 'lan';
-                   fs.writeFileSync(openclawConfPath, JSON.stringify(confData, null, 2), 'utf8');
-               }
-           } catch(e) { }
-       }
+       // Prepare config for Docker: set bind=lan, strip stale Docker paths.
+       prepareConfigForDocker(openclawDir);
        const dockerMountSrc = process.platform === 'win32'
          ? openclawDir.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d) => `/${d.toLowerCase()}`)
          : openclawDir;
@@ -262,10 +361,6 @@ async function spawnPlatform(platformId, config, webContents) {
                    scriptArr.splice(injectIndex, 0, '-p', portMap);
                }
                
-               // Expose port 8081 for OpenClaw WebSocket/Chat integration
-               if (!scriptArr.includes('8081:8081')) {
-                   scriptArr.splice(injectIndex, 0, '-p', '8081:8081');
-               }
            }
        }
     } else if (config.method === 'npm') {
@@ -275,10 +370,8 @@ async function spawnPlatform(platformId, config, webContents) {
 
        const targetPort = config.port || 18789;
 
-       // ── Step 1: Patch allowedOrigins for all loopback variants (sync, fast) ──
-       // Windows resolves 'localhost' to IPv6 (::1). If ::1 is missing from
-       // allowedOrigins, OpenClaw rejects the WebSocket upgrade → chat echo delay.
-       patchOpenClawOriginsAndCleanPlugins(targetPort);
+       // ── Step 1: Prepare config for NPM mode (reset Docker settings, patch origins) ──
+       prepareConfigForNpm(targetPort);
 
        // ── Step 2: Kill zombie gateway processes (async, non-blocking) ──
        // Runs in background so Electron main thread stays responsive (no "Not Responding").
@@ -367,6 +460,13 @@ async function spawnPlatform(platformId, config, webContents) {
         maybeStartPoller();
       }
     });
+
+    // Fallback: if stdout signals never arrive (e.g., openclaw attaches silently
+    // to an already-running process), start the poller unconditionally after a
+    // short grace period so the dashboard button always enables.
+    if (config.method === 'npm') {
+      setTimeout(maybeStartPoller, 8000);
+    }
 
     child.stderr.on('data', (data) => {
       data.toString().split('\n').filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`));
