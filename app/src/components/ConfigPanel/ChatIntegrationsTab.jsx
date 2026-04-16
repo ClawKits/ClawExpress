@@ -25,6 +25,7 @@ const ChatIntegrationsTab = ({
   setChatDraft,
   stopPlatform,
   startPlatform,
+  setStopGatewayConfirm,
 }) => (
   <>
     <div className={styles.section}>
@@ -78,7 +79,7 @@ const ChatIntegrationsTab = ({
                       return;
                     }
                     if (!channel.requiresGateway && platform.status === 'RUNNING') {
-                      toast.error(`🚫 Please STOP OpenClaw Gateway first to safely generate ${channel.label} QR!`);
+                      setStopGatewayConfirm(channel);
                       return;
                     }
                   }

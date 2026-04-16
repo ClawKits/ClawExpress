@@ -95,20 +95,15 @@ const GeneralTab = ({
         <div className={styles.sectionTitle}>General</div>
         <div className={styles.field}>
           <label className={styles.label}>Runtime Method</label>
-          <Dropdown
-            value={draft.method || 'npm'}
-            options={[
-              { value: 'npm', label: 'NPM (Node.js)' },
-              { value: 'docker', label: 'Docker / Podman' },
-            ]}
-            onChange={val => {
-              set('method', val);
-              if (val === 'docker' && !draft.container) {
-                set('container', `openclaw-clawexpress-${Math.random().toString(36).substring(2, 6)}`);
-              }
-            }}
-            minWidth="100%"
+          <input
+            className={styles.input}
+            disabled
+            value={draft.method === 'docker' ? 'Docker / Podman' : 'NPM (Node.js)'}
+            style={{ color: 'var(--text-muted)', cursor: 'not-allowed', backgroundColor: 'rgba(255,255,255,0.02)' }}
           />
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+            To change the architecture mode, you must remove OpenClaw and reinstall.
+          </span>
         </div>
         {schema.fields.map(field => (
           <div key={field.key} className={styles.field}>
@@ -155,16 +150,21 @@ const GeneralTab = ({
           <Dropdown
             value={selectedConnectionId || ''}
             options={[
-              ...(connections.filter(c => c.enabled !== false).length === 0
-                ? [{ value: '', label: 'No connections enabled' }]
+              ...(connections.length === 0
+                ? [{ value: '', label: 'No connections available' }]
                 : []),
-              ...(!selectedConnectionId && connections.filter(c => c.enabled !== false).length > 0
+              ...(!selectedConnectionId && connections.length > 0
                 ? [{ value: '', label: 'Select a connection...' }]
                 : []),
-              ...connections.filter(c => c.enabled !== false).map(c => ({
-                value: c.id,
-                label: `${c.name} (${PROVIDERS.find(p => p.id === c.providerId)?.label})`,
-              })),
+              ...connections
+                .filter(c => c.enabled !== false || c.id === selectedConnectionId)
+                .map(c => ({
+                  value: c.id,
+                  label: `${c.name} (${PROVIDERS.find(p => p.id === c.providerId)?.label || 'Unknown'})${c.enabled === false ? ' (Disabled)' : ''}`,
+                })),
+              ...(selectedConnectionId && !connections.some(c => c.id === selectedConnectionId)
+                ? [{ value: selectedConnectionId, label: 'Unknown Connection (Deleted)' }]
+                : [])
             ]}
             onChange={val => {
               setSelectedConnectionId(val);

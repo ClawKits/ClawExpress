@@ -41,12 +41,26 @@ function removeDockerPaths(obj, dockerBase) {
   return modified;
 }
 
-// ── Helper: fix corrupted sessionFile paths in agents/*/sessions/sessions.json ──
-// Docker writes sessionFile with a container-internal base path (/home/node/.openclaw).
-// On Windows host, Node resolves this as C:\home\node\.openclaw and then path.join()s
-// the real host path onto it → doubled path → ENOENT on every session write.
-// Fix: for each session entry whose sessionFile contains a Docker path, rebuild it
-// using just the UUID filename and the correct host sessions directory.
+// ── Helper: detect if a value anywhere in an object contains a stale path (Docker or NPM) ──
+function containsStalePath(val) {
+  if (typeof val === 'string') return val.includes('/home/node/') || val.includes('\\home\\node\\') || val.includes('/app/skills/') || val.includes('node_modules');
+  if (Array.isArray(val)) return val.some(containsStalePath);
+  if (val && typeof val === 'object') return Object.values(val).some(containsStalePath);
+  return false;
+}
+
+// ── Helper: fix corrupted session state in agents/*/sessions/sessions.json ──
+// Docker writes two categories of stale paths that break NPM mode on the host:
+//
+//   1. sessionFile — container base path (/home/node/.openclaw) is path.join()d with
+//      the real host path → doubled path → ENOENT on every session transcript write.
+//      Fix: rebuild sessionFile using only the UUID filename + correct host dir.
+//
+//   2. skillsSnapshot — skill locations baked as /app/skills/... (Docker image paths).
+//      The AI reads the snapshot prompt and calls read("/app/skills/healthcheck/SKILL.md")
+//      → resolves to C:\app\skills\... on Windows → ENOENT.
+//      Fix: drop the entire skillsSnapshot so OpenClaw regenerates it with NPM paths
+//      on the next session resume.
 function fixSessionFilePaths(openclawDir) {
   try {
     const agentsDir = path.join(openclawDir, 'agents');
@@ -62,13 +76,27 @@ function fixSessionFilePaths(openclawDir) {
         let modified = false;
 
         for (const session of Object.values(sessions)) {
+          // Fix 1: corrupted sessionFile path (Docker base + host path doubled)
           if (
             session.sessionFile &&
             (session.sessionFile.includes('\\home\\node\\') ||
              session.sessionFile.includes('/home/node/'))
           ) {
-            // Reconstruct with correct host path: preserve only the UUID filename
             session.sessionFile = path.join(sessionsDir, path.basename(session.sessionFile));
+            modified = true;
+          }
+
+          // Fix 2: stale skillsSnapshot containing Docker image skill paths (/app/skills/)
+          // Drop it so OpenClaw regenerates with the correct environment global skill paths.
+          if (session.skillsSnapshot && containsStalePath(session.skillsSnapshot)) {
+            delete session.skillsSnapshot;
+            modified = true;
+          }
+
+          // Fix 3: stale systemPromptReport with wrong workspaceDir
+          // Drop it so OpenClaw rebuilds the system prompt with correct paths on next run.
+          if (session.systemPromptReport && containsStalePath(session.systemPromptReport)) {
+            delete session.systemPromptReport;
             modified = true;
           }
         }
@@ -84,6 +112,8 @@ function fixSessionFilePaths(openclawDir) {
 // ── Helper: prepare openclaw.json for NPM (host) mode ──
 // Cleans up any Docker-specific settings that would break host execution:
 //   • Fixes corrupted sessionFile paths in sessions.json (Docker path doubling)
+//   • Drops stale skillsSnapshot with Docker skill paths (/app/skills/)
+//   • Drops stale systemPromptReport with Docker workspaceDir (/home/node/...)
 //   • Removes stale Docker-internal paths (/home/node/) → prevents path doubling
 //   • Resets gateway.bind from 'lan' back to default loopback
 //   • Patches allowedOrigins for all loopback variants (IPv4/IPv6)
@@ -106,6 +136,7 @@ function prepareConfigForNpm(port) {
     // Patch allowedOrigins so all loopback variants are accepted.
     // Windows resolves 'localhost' → ::1; missing entries cause WS upgrade rejection.
     if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
+    if (!cfg.gateway.auth) cfg.gateway.auth = { mode: 'token' };
     const required = [
       `http://localhost:${port}`,
       `http://127.0.0.1:${port}`,
@@ -128,13 +159,19 @@ function prepareConfigForNpm(port) {
     // V2: channels and providers are NOT plugins.
     // If they exist in plugins.entries due to manual config or V1 caching, openclaw will fail to load them as plugins.
     if (cfg.plugins && cfg.plugins.entries) {
-      const fakePlugins = ['whatsapp', 'zalo', 'zalouser', 'telegram', 'discord', 'litellm'];
+      const fakePlugins = ['whatsapp', 'zalo', 'zalouser', 'telegram', 'discord', 'litellm', 'deepseek', 'openai', 'anthropic', 'google', 'groq', 'mistral', 'xai', 'moonshot', 'together_ai', 'openrouter', 'nvidia'];
       for (const fake of fakePlugins) {
         if (cfg.plugins.entries[fake]) {
           delete cfg.plugins.entries[fake];
           modified = true;
         }
       }
+    }
+
+    // Coerce agents.defaults.model to string to prevent "Invalid inference format: [object Object]" errors in CLI
+    if (cfg.agents && cfg.agents.defaults && cfg.agents.defaults.model && typeof cfg.agents.defaults.model === 'object' && cfg.agents.defaults.model.primary) {
+      cfg.agents.defaults.model = cfg.agents.defaults.model.primary;
+      modified = true;
     }
 
     if (modified) {
@@ -155,6 +192,9 @@ function prepareConfigForDocker(openclawDir) {
 
     if (!cfg.gateway) cfg.gateway = {};
 
+    // Fix corrupted sessionFile paths in agents/*/sessions/sessions.json (removes native NPM paths)
+    fixSessionFilePaths(openclawDir);
+
     // Remove stale Docker-internal paths left by a previous container run to
     // avoid path doubling if the user ever switches back to NPM without stopping.
     if (removeDockerPaths(cfg, '/home/node/')) modified = true;
@@ -162,6 +202,25 @@ function prepareConfigForDocker(openclawDir) {
     // Force LAN bind so Docker port mapping (-p host:18789) can reach the gateway.
     if (cfg.gateway.bind !== 'lan') {
       cfg.gateway.bind = 'lan';
+      modified = true;
+    }
+
+    if (!cfg.gateway.auth) cfg.gateway.auth = { mode: 'token' };
+
+    // V2: channels and providers are NOT plugins.
+    if (cfg.plugins && cfg.plugins.entries) {
+      const fakePlugins = ['whatsapp', 'zalo', 'zalouser', 'telegram', 'discord', 'litellm', 'deepseek', 'openai', 'anthropic', 'google', 'groq', 'mistral', 'xai', 'moonshot', 'together_ai', 'openrouter', 'nvidia'];
+      for (const fake of fakePlugins) {
+        if (cfg.plugins.entries[fake]) {
+          delete cfg.plugins.entries[fake];
+          modified = true;
+        }
+      }
+    }
+
+    // Coerce agents.defaults.model to string to prevent "Invalid inference format: [object Object]" errors in CLI
+    if (cfg.agents && cfg.agents.defaults && cfg.agents.defaults.model && typeof cfg.agents.defaults.model === 'object' && cfg.agents.defaults.model.primary) {
+      cfg.agents.defaults.model = cfg.agents.defaults.model.primary;
       modified = true;
     }
 
@@ -303,13 +362,10 @@ async function spawnPlatform(platformId, config, webContents) {
        
        // Prepare config for Docker: set bind=lan, strip stale Docker paths.
        prepareConfigForDocker(openclawDir);
-       const dockerMountSrc = process.platform === 'win32'
-         ? openclawDir.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d) => `/${d.toLowerCase()}`)
-         : openclawDir;
+       const dockerMountSrc = openclawDir;
 
-       // If empty, or struck with the old NPM structure (non-docker), recreate standard execution command
-       const targetTag = (config.version && config.version !== '-') ? config.version.replace(/^v+/i, '').trim() : 'latest';
-       const targetImage = `ghcr.io/openclaw/openclaw:${targetTag}`;
+       // Rely entirely on the :latest tag since installer/updater handle syncing it locally
+       const targetImage = `ghcr.io/openclaw/openclaw:latest`;
 
        if (scriptArr.length === 0 || scriptArr[0] !== 'docker') {
            scriptArr = ['docker', 'run', '-i', targetImage];
@@ -487,6 +543,41 @@ async function spawnPlatform(platformId, config, webContents) {
 
     runningProcesses.set(platformId, { process: child, startTime: Date.now() });
 
+    // ── Pairing request watcher ─────────────────────────────────────────────
+    // Poll ~/.openclaw/credentials/zalouser-pairing.json every 5s.
+    // When a new pending entry appears, notify the renderer to show an approval modal.
+    const notifiedCodes = new Set();
+    const PAIRING_CHANNELS = ['zalouser'];
+    const pairingPollId = setInterval(() => {
+      const openclawDir = path.join(os.homedir(), '.openclaw');
+      for (const ch of PAIRING_CHANNELS) {
+        const pairingFile = path.join(openclawDir, 'credentials', `${ch}-pairing.json`);
+        try {
+          if (!fs.existsSync(pairingFile)) continue;
+          const data = JSON.parse(fs.readFileSync(pairingFile, 'utf8'));
+          const entries = Array.isArray(data) ? data : (data.pending || Object.values(data));
+          for (const entry of entries) {
+            const code = entry.code || entry.pairingCode;
+            if (!code || notifiedCodes.has(code)) continue;
+            notifiedCodes.add(code);
+            const win = BrowserWindow.getAllWindows()[0];
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('pairing-request', {
+                channel: ch,
+                code,
+                senderId: entry.senderId || entry.userId || '?',
+                senderName: entry.senderName || entry.name || 'Unknown',
+                expiresAt: entry.expiresAt || null,
+              });
+            }
+          }
+        } catch (_) {}
+      }
+    }, 5000);
+
+    child.on('exit', () => clearInterval(pairingPollId));
+
+
     // Apply chosen model via CLI after gateway warms up (20s grace period)
     if (config.method === 'docker' && config.cwd) {
       const chosenModelPath = path.join(config.cwd, '.chosen-model');
@@ -582,4 +673,4 @@ function stopPlatform(platformId, webContents, method, container) {
   }
 }
 
-module.exports = { runningProcesses, spawnPlatform, stopPlatform };
+module.exports = { runningProcesses, spawnPlatform, stopPlatform, prepareConfigForDocker, prepareConfigForNpm };

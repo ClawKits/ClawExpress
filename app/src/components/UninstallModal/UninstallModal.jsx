@@ -8,7 +8,6 @@ const UninstallModal = ({ platform, onClose, onUninstalled }) => {
   const { stopPlatform, removePlatform } = usePlatformStore();
   const [step, setStep] = useState('confirm'); // 'confirm', 'stopping', 'uninstalling', 'finishing', 'done', 'error'
   const [errorMsg, setErrorMsg] = useState('');
-  const [wipeConfig, setWipeConfig] = useState(false);
 
   if (!platform) return null;
 
@@ -32,7 +31,7 @@ const UninstallModal = ({ platform, onClose, onUninstalled }) => {
         method: platform.method,
         container: platform.container,
         cwd: platform.cwd,
-        wipeConfig,
+        wipeConfig: true, // Always wipe since dual-mode is no longer supported
       });
 
       if (res && res.success === false) {
@@ -118,31 +117,17 @@ const UninstallModal = ({ platform, onClose, onUninstalled }) => {
                     <span style={{ color: '#ef4444' }}>•</span> Stop and remove Docker container
                   </li>
                 ) : null}
+                <li style={{ fontSize: '13px', color: '#aaa', padding: '3px 0', display: 'flex', gap: '8px', marginTop: '6px' }}>
+                  <span style={{ color: '#ef4444' }}>•</span> Wipe configuration &amp; data directory <span style={{ color: '#555', fontFamily: 'monospace', fontSize: '11px' }}>~/.openclaw</span>
+                </li>
               </ul>
 
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', marginTop: '16px', cursor: 'pointer', userSelect: 'none' }}>
-                <input
-                  type="checkbox"
-                  checked={wipeConfig}
-                  onChange={e => setWipeConfig(e.target.checked)}
-                  style={{ marginTop: '2px', accentColor: '#ef4444', cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: '13px', color: wipeConfig ? '#fca5a5' : '#aaa', lineHeight: 1.5 }}>
-                  Also delete configuration &amp; data directory <span style={{ color: '#555', fontFamily: 'monospace', fontSize: '11px' }}>~/.openclaw</span>
-                  <span style={{ display: 'block', fontSize: '11px', color: '#555', marginTop: '2px' }}>
-                    Leave unchecked if another platform (Docker/NPM) still uses this config.
-                  </span>
+              <div style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.2)', padding: '12px', borderRadius: '6px', marginTop: '16px', display: 'flex', gap: '10px' }}>
+                <AlertTriangle size={16} color="#ef4444" style={{ flexShrink: 0, marginTop: '2px' }} />
+                <span style={{ fontSize: '12px', color: '#fca5a5', lineHeight: 1.4 }}>
+                  All linked integrations, sessions and runtime configurations will be permanently wiped to ensure a clean state for future installations.
                 </span>
-              </label>
-
-              {wipeConfig && (
-                <div style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.2)', padding: '12px', borderRadius: '6px', marginTop: '12px', display: 'flex', gap: '10px' }}>
-                  <AlertTriangle size={16} color="#ef4444" style={{ flexShrink: 0, marginTop: '2px' }} />
-                  <span style={{ fontSize: '12px', color: '#fca5a5', lineHeight: 1.4 }}>
-                    All linked integrations, sessions and runtime configurations will be permanently wiped.
-                  </span>
-                </div>
-              )}
+              </div>
             </div>
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', padding: '14px 20px', borderTop: '1px solid #222', background: 'rgba(0,0,0,0.3)' }}>
               <button onClick={onClose} style={{ background: 'transparent', border: '1px solid #333', color: '#aaa', padding: '8px 18px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' }}>

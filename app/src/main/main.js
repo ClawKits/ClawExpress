@@ -149,6 +149,46 @@ app.whenReady().then(() => {
     log.info('[Updater] Skipping auto-updater in dev mode.');
   }
 
+  // ── Deregister all known IPC channels before re-registering ─────────────
+  // Vite hot-reload re-executes the bundled main.js, which calls all register*Handlers()
+  // again. Without this cleanup, Electron throws "Already registered" errors and silently
+  // drops all subsequent handlers — causing "No handler registered" errors in the renderer.
+  const ALL_IPC_CHANNELS = [
+    // Window
+    'window-min', 'window-max', 'window-close',
+    // Process
+    'platform-start', 'platform-stop', 'platform-status', 'platform-scan', 'platform-install',
+    'platform-send-input', 'platform-uninstall', 'platform-health-check', 'install-global-dependency',
+    'platform-preflight-check',
+    // Persistence
+    'platforms-load', 'platforms-save', 'db-path',
+    // Debug
+    'get-logs', 'open-log-file',
+    // Utils / Config
+    'open-url', 'write-platform-config', 'read-platform-config', 'verify-api-key',
+    'register-model-alias', 'fetch-models', 'read-gateway-models', 'test-model-chat',
+    'read-raw-config', 'write-raw-config', 'get-config-history', 'restore-config-history',
+    // OAuth
+    'oauth-start', 'oauth-exchange',
+    // Connections
+    'connections-load', 'connections-save',
+    // Updater
+    'get-openclaw-versions', 'openclaw-install-version',
+    'check-for-updates', 'download-update', 'install-update', 'get-update-status', 'get-app-version',
+    // Channel login
+    'channel-login', 'channel-logout', 'channel-login-cancel', 'channel-check-linked',
+    'channel-pairing-accept', 'channel-login-success', 'channel-login-complete',
+    // PTY
+    'pty-start', 'pty-input', 'pty-resize', 'pty-kill',
+    // Auth
+    'open-auth-window', 'auth-get-token', 'auth-set-token', 'auth-clear-token',
+    // Skills
+    'skills-fetch-local', 'skills-toggle', 'skills-fetch-hub', 'skills-install',
+    // Settings
+    'settings-load', 'settings-save', 'open-user-data',
+  ];
+  ALL_IPC_CHANNELS.forEach(ch => { try { ipcMain.removeHandler(ch); } catch (_) {} });
+
   // Register all IPC handler modules
   registerAuthHandlers();
   registerPlatformInstallerHandlers(runningProcesses);
@@ -158,6 +198,7 @@ app.whenReady().then(() => {
   registerOpenclawUpdaterHandlers();
   registerSkillHandlers();
   registerPtyHandlers();
+  registerCoreHandlers();
 
   // Apply saved launch-at-startup on boot
   const bootPrefs = loadSettings();
@@ -183,6 +224,7 @@ app.on('window-all-closed', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Core IPC — Window Controls
 // ─────────────────────────────────────────────────────────────────────────────
+function registerCoreHandlers() {
 ipcMain.handle('window-min',   (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const prefs = loadSettings();
@@ -323,3 +365,4 @@ ipcMain.handle('download-update',   () => app.isPackaged ? updater.downloadUpdat
 ipcMain.handle('install-update',    () => { if (app.isPackaged) updater.quitAndInstall(); return { status: 'dev-mode' }; });
 ipcMain.handle('get-update-status', () => updater.getStatus());
 ipcMain.handle('get-app-version',   () => app.getVersion());
+}

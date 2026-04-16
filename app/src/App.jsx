@@ -15,6 +15,7 @@ import NpmDependencyModal from './components/InstallModal/NpmDependencyModal';
 import { usePlatformStore } from './store/usePlatformStore';
 import useAuthStore from './store/useAuthStore';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
+import PairingModal from './components/PairingModal/PairingModal';
 import './index.css';
 
 function App() {
@@ -69,6 +70,7 @@ function App() {
       <AuthModal isOpen={isAuthModalOpen} onClose={closeAuthModal} />
       <NpmDependencyModal />
       <UpdateNotification />
+      <PairingModal />
     </>
   );
 }

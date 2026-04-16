@@ -19,6 +19,7 @@ const path = require('path');
 const net  = require('net');
 const os   = require('os');
 const log  = require('./logger');
+const { prepareConfigForDocker, prepareConfigForNpm } = require('./processManager');
 
 const channelLoginProcs = new Map();
 
@@ -230,24 +231,19 @@ function registerChannelHandlers(runningProcesses) {
 
         // Step 1: stop gateway
         send('log', { line: '[ClawExpress] Stopping gateway…' });
-        if (isWin) {
-          if (platformId) {
-            const entry = runningProcesses.get(platformId);
-            if (entry) {
-              require('child_process').spawnSync('taskkill', ['/F', '/T', '/PID', String(entry.process.pid)], { timeout: 5000 });
-              runningProcesses.delete(platformId);
-            }
-          }
-          require('child_process').spawnSync('powershell', ['-Command',
-            "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'openclaw.mjs' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
-            { timeout: 8000, windowsHide: true });
+        
+        const { stopPlatform } = require('./processManager');
+        if (platformId) {
+          stopPlatform(platformId, null, platformConfig?.method, platformConfig?.container);
         } else {
-          const entry = platformId ? runningProcesses.get(platformId) : null;
-          if (entry) {
-            try { process.kill(-entry.process.pid, 'SIGTERM'); } catch (_) { entry.process.kill('SIGTERM'); }
-            if (platformId) runningProcesses.delete(platformId);
+          // Fallback cleanup if platformId missing
+          if (isWin) {
+            require('child_process').spawnSync('powershell', ['-Command',
+              "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'openclaw.mjs' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+              { timeout: 8000, windowsHide: true });
+          } else {
+            require('child_process').spawnSync('pkill', ['-f', 'openclaw.mjs'], { timeout: 5000 });
           }
-          require('child_process').spawnSync('pkill', ['-f', 'openclaw.mjs'], { timeout: 5000 });
         }
         // The gateway is stopped. Wait briefly for OS to release ports.
         await new Promise(r => setTimeout(r, 2000));
@@ -258,15 +254,27 @@ function registerChannelHandlers(runningProcesses) {
         let ptyCommand, ptyArgs;
         if (platformConfig?.method === 'docker') {
            const openclawDir = path.join(os.homedir(), '.openclaw');
-           const dockerMountSrc = process.platform === 'win32'
-             ? openclawDir.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d) => `/${d.toLowerCase()}`)
-             : openclawDir;
-           const targetTag = platformConfig.version ? platformConfig.version.replace(/^v+/i, '').trim() : 'latest';
-           const targetImage = `ghcr.io/openclaw/openclaw:${targetTag}`;
+           prepareConfigForDocker(openclawDir);
+           
+           const envArgs = [];
+           try {
+             const cfg = JSON.parse(fs.readFileSync(path.join(openclawDir, 'openclaw.json'), 'utf8'));
+             if (cfg.env) {
+               for (const [k, v] of Object.entries(cfg.env)) {
+                 envArgs.push('-e', `${k}=${v}`);
+               }
+             }
+           } catch (_) {}
+           
+           const dockerMountSrc = openclawDir;
+           // Rely entirely on the :latest tag since installer/updater handle syncing it locally
+           const targetImage = `ghcr.io/openclaw/openclaw:latest`;
 
            ptyCommand = 'docker';
-           ptyArgs = ['run', '-e', 'CI=1', '-it', '--rm', '-v', `${dockerMountSrc}:/home/node/.openclaw`, targetImage, 'node', 'openclaw.mjs', 'channels', 'login', '--channel', 'whatsapp'];
+           ptyArgs = ['run', ...envArgs, '-e', 'CI=1', '-it', '--rm', '-v', `${dockerMountSrc}:/home/node/.openclaw`, targetImage, 'node', 'openclaw.mjs', 'channels', 'login', '--channel', 'whatsapp'];
         } else {
+           prepareConfigForNpm(platformConfig?.port || 18789);
+           
            ptyCommand = isWin ? 'cmd.exe' : 'openclaw';
            ptyArgs    = isWin
              ? ['/c', 'openclaw', 'channels', 'login', '--channel', 'whatsapp']
@@ -330,19 +338,31 @@ function registerChannelHandlers(runningProcesses) {
         let cliCmd, cliArgs, containerName;
         if (platformConfig?.method === 'docker') {
            const openclawDir = path.join(os.homedir(), '.openclaw');
-           const dockerMountSrc = process.platform === 'win32'
-             ? openclawDir.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d) => `/${d.toLowerCase()}`)
-             : openclawDir;
+           prepareConfigForDocker(openclawDir);
+           
+           const envArgs = [];
+           try {
+             const cfg = JSON.parse(fs.readFileSync(path.join(openclawDir, 'openclaw.json'), 'utf8'));
+             if (cfg.env) {
+               for (const [k, v] of Object.entries(cfg.env)) {
+                 envArgs.push('-e', `${k}=${v}`);
+               }
+             }
+           } catch (_) {}
+           
+           const dockerMountSrc = openclawDir;
            const tmpHostDir = path.join(openclawDir, 'tmp');
            fs.mkdirSync(tmpHostDir, { recursive: true });
 
-           const targetTag = platformConfig.version ? platformConfig.version.replace(/^v+/i, '').trim() : 'latest';
-           const targetImage = `ghcr.io/openclaw/openclaw:${targetTag}`;
+           // Rely entirely on the :latest tag since installer/updater handle syncing it locally
+           const targetImage = `ghcr.io/openclaw/openclaw:latest`;
 
            containerName = `openclaw_zalo_${Date.now()}`;
            cliCmd = 'docker';
-           cliArgs = ['run', '--name', containerName, '-e', 'CI=1', '-it', '--rm', '-v', `${dockerMountSrc}:/home/node/.openclaw`, targetImage, 'node', 'openclaw.mjs', 'channels', 'login', '--channel', channel];
+           cliArgs = ['run', '--name', containerName, ...envArgs, '-e', 'CI=1', '-it', '--rm', '-v', `${dockerMountSrc}:/home/node/.openclaw`, targetImage, 'node', 'openclaw.mjs', 'channels', 'login', '--channel', channel];
         } else {
+           prepareConfigForNpm(platformConfig?.port || 18789);
+           
            cliCmd = isWin ? 'cmd.exe' : 'openclaw';
            cliArgs = isWin
              ? ['/c', 'openclaw', 'channels', 'login', '--channel', channel]
@@ -418,6 +438,7 @@ function registerChannelHandlers(runningProcesses) {
 
   // Called by UI when user confirms WhatsApp QR was scanned and linked.
   // Restarts the gateway so it picks up the new credentials.
+  try { ipcMain.removeHandler('channel-login-complete'); } catch (_) {}
   ipcMain.handle('channel-login-complete', async (event, { platformId, platformConfig }) => {
     if (!platformId || !platformConfig) return { success: false, reason: 'no-platform' };
     try {
@@ -435,6 +456,7 @@ function registerChannelHandlers(runningProcesses) {
     }
   });
 
+  try { ipcMain.removeHandler('channel-logout'); } catch (_) {}
   ipcMain.handle('channel-logout', async (event, { channel }) => {
     if (channelLoginProcs.has(channel)) {
       const proc = channelLoginProcs.get(channel);
@@ -487,23 +509,31 @@ function registerChannelHandlers(runningProcesses) {
         if (err2) return { success: false, output: `Failed to remove Zalo fallback session: ${err2.message}` };
       }
 
-      // Clean up channel config from openclaw.json.
-      // Only remove channels[channel] (session/policy config) so the gateway does not
-      // auto-connect on next start. Do NOT touch plugins.entries[channel] — the plugin
-      // registration must stay so "web login provider" remains available for the next
-      // QR scan without requiring a gateway restart.
+      // Clean up channel config and plugin entries from openclaw.json.
+      // Since we now restart the gateway after QR linking anyway, we can cleanly remove
+      // the plugin entries during logout without worrying about breaking runtime sessions.
       try {
         const cfgFile = path.join(openclawDir, 'openclaw.json');
         if (fs.existsSync(cfgFile)) {
           const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+          let changed = false;
+          
           if (cfg.channels && cfg.channels[channel] !== undefined) {
             delete cfg.channels[channel];
+            changed = true;
+          }
+          
+          if (cfg.plugins && cfg.plugins.entries && cfg.plugins.entries[channel] !== undefined) {
+            delete cfg.plugins.entries[channel];
+            changed = true;
+          }
+          
+          if (changed) {
             fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2), 'utf8');
-            log.info(`[channelHandler] Removed channels.${channel} from openclaw.json`);
+            log.info(`[channelHandler] Removed ${channel} from channels and plugins.entries in openclaw.json`);
           }
         }
       } catch (cfgErr) {
-        // Config cleanup failure is non-fatal — session files are already gone.
         log.info(`[channelHandler] Warning: could not clean config for ${channel}: ${cfgErr.message}`);
       }
 
@@ -519,20 +549,27 @@ function registerChannelHandlers(runningProcesses) {
       const cfgFile = path.join(openclawDir, 'openclaw.json');
       if (fs.existsSync(cfgFile)) {
         const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+        let changed = false;
+
         cfg.channels = cfg.channels || {};
         if (!cfg.channels[channel]) {
           cfg.channels[channel] = {
             enabled: true,
-            dmPolicy: 'open',
-            allowFrom: ['*']
+            dmPolicy: 'pairing',
           };
-          // Explicitly ensure plugins entries is also complete
-          cfg.plugins = cfg.plugins || {};
-          cfg.plugins.entries = cfg.plugins.entries || {};
+          changed = true;
+        }
+
+        cfg.plugins = cfg.plugins || {};
+        cfg.plugins.entries = cfg.plugins.entries || {};
+        if (!cfg.plugins.entries[channel] || !cfg.plugins.entries[channel].enabled) {
           cfg.plugins.entries[channel] = { enabled: true };
-          
+          changed = true;
+        }
+        
+        if (changed) {
           fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2), 'utf8');
-          log.info(`[channelHandler] Injected default open policy for ${channel} upon successful login.`);
+          log.info(`[channelHandler] Injected default open policy and plugin entry for ${channel} upon successful login.`);
         }
       }
       return { success: true };

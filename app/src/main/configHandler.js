@@ -535,17 +535,15 @@ function registerConfigHandlers() {
          const os = require('os');
          const path = require('path');
          const openclawDir = path.join(os.homedir(), '.openclaw');
-         const dockerMountSrc = isWin
-             ? openclawDir.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d) => `/${d.toLowerCase()}`)
-             : openclawDir;
-         const targetTag = version ? version.replace(/^v+/i, '').trim() : 'latest';
-         const targetImage = `ghcr.io/openclaw/openclaw:${targetTag}`;
+         const dockerMountSrc = openclawDir;
+         // Rely entirely on the :latest tag since installer/updater handle syncing it locally
+         const targetImage = `ghcr.io/openclaw/openclaw:latest`;
          const containerName = `openclaw-${platformId}`;
          const pairingCmd = `node openclaw.mjs pairing approve ${channel} "${code}"`;
          const nullRedirect = isWin ? '2>nul' : '2>/dev/null';
          
          // Try to exec in running container, if it fails, run ad-hoc container
-         cmdToRun = `docker exec ${containerName} ${pairingCmd} ${nullRedirect} || docker run --rm -v ${dockerMountSrc}:/home/node/.openclaw ${targetImage} ${pairingCmd}`;
+         cmdToRun = `docker exec ${containerName} ${pairingCmd} ${nullRedirect} || docker run --rm -v "${dockerMountSrc}:/home/node/.openclaw" ${targetImage} ${pairingCmd}`;
       }
 
       exec(cmdToRun, { cwd: cwd || process.cwd() }, (err, stdout, stderr) => {

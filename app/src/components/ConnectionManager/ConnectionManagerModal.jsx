@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, CheckCircle2, Trash2, Copy, ExternalLink, Loader2 } from 'lucide-react';
 import { useConnectionStore } from '../../store/useConnectionStore';
+import { usePlatformStore } from '../../store/usePlatformStore';
 import { PROVIDERS, PROVIDER_CATEGORIES } from '../../constants/providers';
 import Dropdown from '../Dropdown/Dropdown';
 import { toast } from '../Toast/Toast';
@@ -200,12 +201,14 @@ const OAuthFlow = ({ provider, draft, setDraft, onSuccess }) => {
 // ─── Main Modal ───────────────────────────────────────────────────────────────
 const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
   const { connections, addConnection, updateConnection, removeConnection } = useConnectionStore();
+  const { platforms, updatePlatform } = usePlatformStore();
 
   const isCreating = !connectionId;
   const [draft, setDraft] = useState(null);
   const [verifyStatus, setVerifyStatus] = useState('idle');
   const [verifyMsg, setVerifyMsg] = useState('');
   const [oauthDone, setOauthDone] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   useEffect(() => {
     if (isCreating) {
@@ -276,11 +279,57 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
     }
   };
 
-  const handleDelete = async () => {
-    if (window.confirm(`Remove connection "${draft.name}"?`)) {
-      await removeConnection(connectionId);
-      onClose();
+  const handleDelete = () => {
+    const affectedPlatforms = platforms?.filter(p => p.env && p.env.CLAWEXPRESS_CONNECTION_ID === connectionId) || [];
+
+    if (affectedPlatforms.length > 0) {
+      const platformNames = affectedPlatforms.map(p => p.name).join(', ');
+      setDeleteConfirm({
+        type: 'in-use',
+        title: 'Cảnh báo cấu hình đang sử dụng',
+        message: `Kết nối "${draft.name}" hiện đang được liên kết với nền tảng: ${platformNames}.\n\nNếu xoá, hệ thống sẽ tự động gỡ liên kết khỏi các nền tảng này và thiết lập OpenClaw về mặc định (chưa liên kết). Bạn có chắc chắn muốn tiến hành?`,
+        platforms: affectedPlatforms
+      });
+    } else {
+      setDeleteConfirm({
+        type: 'normal',
+        title: 'Xóa kết nối API',
+        message: `Bạn có chắc chắn muốn xóa vĩnh viễn kết nối "${draft.name}" không? Thao tác này không thể hoàn tác.`
+      });
     }
+  };
+
+  const processDelete = async () => {
+    if (deleteConfirm.type === 'in-use') {
+      const ALL_REMOVABLE_KEYS = PROVIDERS.flatMap(p => [
+        p.envKey,
+        p.envKey.replace(/(_API_KEY|_TOKEN|_KEY)$/, '_BASE_URL'),
+      ]);
+
+      for (const p of deleteConfirm.platforms) {
+        const newEnv = { ...p.env };
+        delete newEnv.CLAWEXPRESS_CONNECTION_ID;
+        delete newEnv.CLAWEXPRESS_PROVIDER;
+        
+        await updatePlatform(p.id, { env: newEnv });
+        
+        if (p.cwd) {
+          try {
+            await window.electron?.ipcRenderer.invoke('write-platform-config', {
+              cwd: p.cwd,
+              env: {}, 
+              envToRemove: ALL_REMOVABLE_KEYS,
+            });
+          } catch (err) {
+            console.error('Failed to reset openclaw Gateway config', err);
+          }
+        }
+      }
+    }
+
+    await removeConnection(connectionId);
+    setDeleteConfirm(null);
+    onClose();
   };
 
   const getModalTitle = () => {
@@ -291,7 +340,7 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }} onClick={onClose}>
+    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
       <div onClick={e => e.stopPropagation()} style={{ maxWidth: '500px', width: '100%', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', color: 'var(--text-primary)' }}>
 
         {/* Header */}
@@ -451,6 +500,34 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
           </div>
         </div>
       </div>
+
+      {deleteConfirm && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '400px', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: '12px', padding: '24px', boxShadow: '0 20px 40px rgba(0,0,0,0.5)' }}>
+            <div style={{ fontSize: '15px', fontWeight: 600, color: deleteConfirm.type === 'in-use' ? '#ef4444' : 'var(--text-primary)', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Trash2 size={16} /> {deleteConfirm.title}
+            </div>
+            <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+              {deleteConfirm.message}
+            </div>
+            
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '24px' }}>
+              <button 
+                onClick={() => setDeleteConfirm(null)} 
+                style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}
+              >
+                Hủy (Cancel)
+              </button>
+              <button 
+                onClick={processDelete} 
+                style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', background: '#ef4444', color: '#fff', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+              >
+                Xác nhận xoá
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

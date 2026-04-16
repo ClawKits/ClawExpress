@@ -10,6 +10,7 @@ import RawConfigEditor from '../RawConfigEditor/RawConfigEditor';
 import CHANNEL_REGISTRY from '../../constants/channelRegistry';
 import RestartBanner from './RestartBanner';
 import UnlinkConfirmModal from './UnlinkConfirmModal';
+import StopConfirmModal from './StopConfirmModal';
 import GeneralTab from './GeneralTab';
 import ChatIntegrationsTab from './ChatIntegrationsTab';
 import UninstallModal from '../UninstallModal/UninstallModal';
@@ -97,6 +98,7 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
   const [zaloConfig, setZaloConfig] = useState({ dmPolicy: 'pairing', allowFrom: '', groupPolicy: 'allowlist', groupAllowFrom: '' });
   const [pairingCodes, setPairingCodes] = useState({});
   const [unlinkConfirm, setUnlinkConfirm] = useState(null);
+  const [stopGatewayConfirm, setStopGatewayConfirm] = useState(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
 
   useEffect(() => { loadConnections(); }, []);
@@ -490,6 +492,7 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
               setPairingCodes={setPairingCodes}
               isUnlinking={isUnlinking}
               setUnlinkConfirm={setUnlinkConfirm}
+              setStopGatewayConfirm={setStopGatewayConfirm}
               setQrModal={setQrModal}
               chatDraft={chatDraft}
               setChatDraft={setChatDraft}
@@ -568,6 +571,20 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
           channel={unlinkConfirm}
           onCancel={() => setUnlinkConfirm(null)}
           onConfirm={handleUnlinkConfirm}
+        />
+      )}
+
+      {stopGatewayConfirm && (
+        <StopConfirmModal
+          channel={stopGatewayConfirm}
+          onCancel={() => setStopGatewayConfirm(null)}
+          onConfirm={async () => {
+            const channel = stopGatewayConfirm;
+            setStopGatewayConfirm(null);
+            await stopPlatform(platform.id);
+            // Allow 1.5s for OS to release ports fully before Zalo's zca-js headless check begins
+            setTimeout(() => setQrModal(channel.id), 1500);
+          }}
         />
       )}
 

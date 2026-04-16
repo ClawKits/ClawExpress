@@ -112,16 +112,19 @@ const ApiKeysPage = () => {
         </div>
 
         <div 
-          onClick={requireAuth(() => { 
-            updateConnection(conn.id, { enabled: conn.enabled !== false ? false : true });
-            if (conn.enabled === false) {
-               setStatuses(s => {
-                 const next = { ...s };
-                 delete next[conn.id];
-                 return next;
-               });
-            }
-          })}
+          onClick={(e) => { 
+            e.stopPropagation();
+            requireAuth(() => { 
+              updateConnection(conn.id, { enabled: conn.enabled !== false ? false : true });
+              if (conn.enabled === false) {
+                 setStatuses(s => {
+                   const next = { ...s };
+                   delete next[conn.id];
+                   return next;
+                 });
+              }
+            })(e);
+          }}
           style={{ 
             opacity: hoveredCardId === conn.id ? 1 : 0,
             pointerEvents: hoveredCardId === conn.id ? 'auto' : 'none',

@@ -104,6 +104,8 @@ function finalizeConfig(targetDir, config, configMapping, sendLog) {
       } catch (_) {}
 
       existing.gateway = existing.gateway || { mode: 'local' };
+      existing.gateway.auth = existing.gateway.auth || { mode: 'token' };
+      
       existing.env = { ...(existing.env || {}), ...dynamicEnv };
       existing.agents = existing.agents || {};
       existing.agents.defaults = existing.agents.defaults || {};

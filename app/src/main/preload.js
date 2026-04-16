@@ -20,7 +20,7 @@ const VALID_CHANNELS = [
   'get-openclaw-versions', 'openclaw-install-version',
   'check-for-updates', 'download-update', 'install-update', 'get-update-status', 'get-app-version',
   // Channel login (QR-based: WhatsApp, Zalo Personal)
-  'channel-login', 'channel-logout', 'channel-login-cancel', 'channel-check-linked', 'channel-pairing-accept',
+  'channel-login', 'channel-logout', 'channel-login-cancel', 'channel-check-linked', 'channel-pairing-accept', 'channel-login-success',
   // Embedded terminal (PTY via node-pty)
   'pty-start', 'pty-input', 'pty-resize', 'pty-kill',
   // Auth Modal
@@ -39,6 +39,8 @@ const VALID_EVENTS = [
   'updater-event',
   // Channel login events
   'channel-login-event',
+  // Pairing request from gateway (zalouser DM gating)
+  'pairing-request',
   // Embedded terminal (PTY output + exit)
   'pty-data', 'pty-exit',
 ];

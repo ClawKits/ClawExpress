@@ -120,10 +120,15 @@ const ConnectionPicker = ({ value, onChange }) => {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'flex-start' }}>
       <Dropdown
         value={selectedConnectionId}
-        options={liveConnections.map(c => {
-           const p = PROVIDERS.find(p => p.id === c.providerId);
-           return { value: c.id, label: `${c.name} (${p?.label || 'Unknown'})` };
-        })}
+        options={[
+          ...liveConnections.map(c => {
+             const p = PROVIDERS.find(p => p.id === c.providerId);
+             return { value: c.id, label: `${c.name} (${p?.label || 'Unknown'})` };
+          }),
+          ...(selectedConnectionId && !liveConnections.some(c => c.id === selectedConnectionId)
+                ? [{ value: selectedConnectionId, label: 'Unknown Connection (Offline/Deleted)' }]
+                : [])
+        ]}
         onChange={setSelectedConnectionId}
         minWidth="250px"
       />

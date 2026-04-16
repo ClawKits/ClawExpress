@@ -23,6 +23,11 @@ const os = require('os');
 const activePtys = new Map();
 
 function registerPtyHandlers() {
+  // Guard against duplicate registration (Vite dev-mode hot-reload re-requires modules).
+  ['pty-start', 'pty-input', 'pty-resize', 'pty-kill'].forEach(ch => {
+    try { ipcMain.removeHandler(ch); } catch (_) {}
+  });
+
   // ── Start a PTY ────────────────────────────────────────────────────────────
   ipcMain.handle('pty-start', (event, { id, command, args = [], cols = 80, rows = 24, env = {} }) => {
     // Kill any existing PTY with this id.
