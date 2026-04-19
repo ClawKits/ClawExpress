@@ -28,6 +28,17 @@ const net  = require('net');
 const fs   = require('fs');
 const os   = require('os');
 
+// ── Globally fix PATH for macOS/Linux so spawned commands (docker/node/orb) work ──
+if (process.platform !== 'win32') {
+  const orbPath = path.join(os.homedir(), '.orbstack/bin');
+  const commonPaths = ['/usr/local/bin', '/opt/homebrew/bin', '/opt/local/bin', orbPath];
+  const currentPaths = (process.env.PATH || '').split(':');
+  const missingPaths = commonPaths.filter(p => !currentPaths.includes(p));
+  if (missingPaths.length > 0) {
+    process.env.PATH = missingPaths.join(':') + ':' + process.env.PATH;
+  }
+}
+
 // ── Core modules ─────────────────────────────────────────────────────────────
 const log = require('./logger');
 const updater = require('./updater');

@@ -407,6 +407,12 @@ function registerPlatformInstallerHandlers(runningProcesses) {
       if (method === 'docker') {
         const { spawnSync } = require('child_process');
         const isWin = process.platform === 'win32';
+        
+        // Ensure Mac paths are included since Electron omits them by default
+        const PATH_SEP = isWin ? ';' : ':';
+        const macPaths = '/usr/local/bin:/opt/homebrew/bin:/opt/local/bin:' + path.join(os.homedir(), '.orbstack/bin');
+        const customPath = process.env.PATH + PATH_SEP + (isWin ? '' : macPaths);
+        const envWithPath = { ...process.env, PATH: customPath };
 
         // ── Priority order: docker → podman → orbstack ──────────────────────
         const RUNTIMES = [
@@ -435,7 +441,7 @@ function registerPlatformInstallerHandlers(runningProcesses) {
               const dh = process.env.DOCKER_HOST || '';
               const isOrb = dh.includes('orbstack') ||
                 fs.existsSync('/run/host-services/ssh-auth.sock') ||      // macOS OrbStack marker
-                spawnSync('orb', ['version'], { timeout: 2000 }).status === 0;
+                spawnSync('orb', ['version'], { timeout: 2000, env: envWithPath }).status === 0;
               return isOrb;
             },
             label: 'OrbStack',
@@ -447,10 +453,10 @@ function registerPlatformInstallerHandlers(runningProcesses) {
           // Custom detect function (for OrbStack)
           if (rt.detectFn && !rt.detectFn()) continue;
 
-          const res = spawnSync(rt.cmd, rt.infoArgs, { timeout: 5000, shell: isWin });
+          const res = spawnSync(rt.cmd, rt.infoArgs, { timeout: 5000, shell: isWin, env: envWithPath });
           if (res.status === 0) {
             // Get version string
-            const verRes = spawnSync(rt.cmd, rt.versionArgs, { timeout: 3000, shell: isWin, encoding: 'utf8' });
+            const verRes = spawnSync(rt.cmd, rt.versionArgs, { timeout: 3000, shell: isWin, encoding: 'utf8', env: envWithPath });
             const version = verRes.stdout?.trim() || 'unknown';
             detected = { ...rt, version };
             break;
@@ -474,7 +480,11 @@ function registerPlatformInstallerHandlers(runningProcesses) {
       } else if (method === 'npm') {
         const { spawnSync } = require('child_process');
         const isWin = process.platform === 'win32';
-        const res = spawnSync('node', ['-v'], { shell: isWin });
+        const PATH_SEP = isWin ? ';' : ':';
+        const macPaths = '/usr/local/bin:/opt/homebrew/bin:/opt/local/bin';
+        const customPath = process.env.PATH + PATH_SEP + (isWin ? '' : macPaths);
+        const envWithPath = { ...process.env, PATH: customPath };
+        const res = spawnSync('node', ['-v'], { shell: isWin, env: envWithPath });
         if (res.status === 0) {
           const ver = res.stdout.toString().trim();
           checks.push({ id: 'dep', status: 'success', text: `Node.js ${ver} detected.` });
