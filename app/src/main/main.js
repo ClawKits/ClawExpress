@@ -28,14 +28,29 @@ const net  = require('net');
 const fs   = require('fs');
 const os   = require('os');
 
-// ── Globally fix PATH for macOS/Linux so spawned commands (docker/node/orb) work ──
+// ── Globally fix environment for macOS/Linux GUI apps (Production) ──
 if (process.platform !== 'win32') {
+  // 1. Inject missing PATH components so child_process finds binaries
   const orbPath = path.join(os.homedir(), '.orbstack/bin');
+  const podmanPath = path.join(os.homedir(), '.local/share/containers/podman/machine/podman-machine-default/podman.sock');
   const commonPaths = ['/usr/local/bin', '/opt/homebrew/bin', '/opt/local/bin', orbPath];
   const currentPaths = (process.env.PATH || '').split(':');
   const missingPaths = commonPaths.filter(p => !currentPaths.includes(p));
   if (missingPaths.length > 0) {
-    process.env.PATH = missingPaths.join(':') + ':' + process.env.PATH;
+    process.env.PATH = missingPaths.join(':') + (process.env.PATH ? ':' + process.env.PATH : '');
+  }
+
+  // 2. Inject DOCKER_HOST if missing (GUI apps do not load .zshrc)
+  if (!process.env.DOCKER_HOST) {
+    const orbSocket = path.join(os.homedir(), '.orbstack/run/docker.sock');
+    const dockerSocket = path.join(os.homedir(), '.docker/run/docker.sock');
+    if (fs.existsSync(orbSocket)) {
+      process.env.DOCKER_HOST = `unix://${orbSocket}`;
+    } else if (fs.existsSync(dockerSocket)) {
+      process.env.DOCKER_HOST = `unix://${dockerSocket}`;
+    } else if (fs.existsSync(podmanPath)) {
+      process.env.DOCKER_HOST = `unix://${podmanPath}`;
+    }
   }
 }
 
