@@ -1,312 +1,56 @@
+/**
+ * processManager.js
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Orchestration hub for platform lifecycle (spawn / stop).
+ *
+ * Routing logic:
+ *   isOpenClaw → runners/openclaw.runner.js  (full config patching, docker
+ *                cleanup, zombie kill, pairing watcher, model apply …)
+ *   otherwise  → runners/default.runner.js   (generic: --name injection,
+ *                HTTP-200 readiness check)
+ *
+ * Adding a new platform runner:
+ *   1. Create  app/src/main/runners/<platform>.runner.js
+ *   2. Add a condition in `resolveRunner()` below.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 
-const { spawn }       = require('child_process');
-const path            = require('path');
-const fs              = require('fs');
-const os              = require('os');
-const http            = require('http');
+const { spawn }              = require('child_process');
+const path                   = require('path');
+const fs                     = require('fs');
+const os                     = require('os');
 const { app, BrowserWindow } = require('electron');
-const log             = require('./logger');
+const log                    = require('./logger');
+
+const openclawRunner  = require('./runners/openclaw.runner');
+const openfangRunner  = require('./runners/openfang.runner');
+const defaultRunner   = require('./runners/default.runner');
 
 const runningProcesses = new Map();
 
-// ── Helper: fire-and-forget async process spawn (never blocks main thread) ──
-function fireSpawn(cmd, args, opts = {}) {
-  return new Promise((resolve) => {
-    try {
-      const p = spawn(cmd, args, { windowsHide: true, stdio: 'ignore', ...opts });
-      const t = setTimeout(() => { try { p.kill(); } catch (_) {} resolve(); }, opts.timeout || 6000);
-      p.on('close', () => { clearTimeout(t); resolve(); });
-      p.on('error', () => { clearTimeout(t); resolve(); });
-    } catch (_) { resolve(); }
-  });
+// ── Runner selector ───────────────────────────────────────────────────────────
+
+function isOpenClaw(platformId, config) {
+  return (
+    platformId === 'openclaw' ||
+    config.registryId === 'openclaw' ||
+    config.name?.toLowerCase().includes('openclaw')
+  );
 }
 
-// ── Helper: recursively remove config values that contain Docker-internal paths ──
-// When switching from Docker → NPM, openclaw.json may still contain absolute paths
-// written by the container (e.g. /home/node/.openclaw). On the host, OpenClaw reads
-// these as the base dir then path.join()s the real host path onto it, producing a
-// doubled path like "C:\home\node\.openclaw\...\C:\Users\...\..." → ENOENT.
-function removeDockerPaths(obj, dockerBase) {
-  if (!obj || typeof obj !== 'object') return false;
-  let modified = false;
-  for (const key of Object.keys(obj)) {
-    const val = obj[key];
-    if (typeof val === 'string' && val.includes(dockerBase)) {
-      delete obj[key];
-      modified = true;
-    } else if (val && typeof val === 'object' && !Array.isArray(val)) {
-      if (removeDockerPaths(val, dockerBase)) modified = true;
-    }
-  }
-  return modified;
+function resolveRunner(platformId, config) {
+  if (isOpenClaw(platformId, config)) return openclawRunner;
+  if (
+    platformId === 'openfang' ||
+    config.registryId === 'openfang' ||
+    config.name?.toLowerCase().includes('openfang')
+  ) return openfangRunner;
+  // Add more dedicated runners here:
+  // if (config.registryId === 'n8n') return require('./runners/n8n.runner');
+  return defaultRunner;  // generic fallback — HTTP poll on config.port
 }
 
-// ── Helper: detect if a value anywhere in an object contains a stale path (Docker or NPM) ──
-function containsStalePath(val) {
-  if (typeof val === 'string') return val.includes('/home/node/') || val.includes('\\home\\node\\') || val.includes('/app/skills/') || val.includes('node_modules');
-  if (Array.isArray(val)) return val.some(containsStalePath);
-  if (val && typeof val === 'object') return Object.values(val).some(containsStalePath);
-  return false;
-}
-
-// ── Helper: fix corrupted session state in agents/*/sessions/sessions.json ──
-// Docker writes two categories of stale paths that break NPM mode on the host:
-//
-//   1. sessionFile — container base path (/home/node/.openclaw) is path.join()d with
-//      the real host path → doubled path → ENOENT on every session transcript write.
-//      Fix: rebuild sessionFile using only the UUID filename + correct host dir.
-//
-//   2. skillsSnapshot — skill locations baked as /app/skills/... (Docker image paths).
-//      The AI reads the snapshot prompt and calls read("/app/skills/healthcheck/SKILL.md")
-//      → resolves to C:\app\skills\... on Windows → ENOENT.
-//      Fix: drop the entire skillsSnapshot so OpenClaw regenerates it with NPM paths
-//      on the next session resume.
-function fixSessionFilePaths(openclawDir) {
-  try {
-    const agentsDir = path.join(openclawDir, 'agents');
-    if (!fs.existsSync(agentsDir)) return;
-
-    for (const agentName of fs.readdirSync(agentsDir)) {
-      const sessionsJson = path.join(agentsDir, agentName, 'sessions', 'sessions.json');
-      if (!fs.existsSync(sessionsJson)) continue;
-
-      try {
-        const sessions = JSON.parse(fs.readFileSync(sessionsJson, 'utf8'));
-        const sessionsDir = path.join(agentsDir, agentName, 'sessions');
-        let modified = false;
-
-        for (const session of Object.values(sessions)) {
-          // Fix 1: corrupted sessionFile path (Docker base + host path doubled)
-          if (
-            session.sessionFile &&
-            (session.sessionFile.includes('\\home\\node\\') ||
-             session.sessionFile.includes('/home/node/'))
-          ) {
-            session.sessionFile = path.join(sessionsDir, path.basename(session.sessionFile));
-            modified = true;
-          }
-
-          // Fix 2: stale skillsSnapshot containing Docker image skill paths (/app/skills/)
-          // Drop it so OpenClaw regenerates with the correct environment global skill paths.
-          if (session.skillsSnapshot && containsStalePath(session.skillsSnapshot)) {
-            delete session.skillsSnapshot;
-            modified = true;
-          }
-
-          // Fix 3: stale systemPromptReport with wrong workspaceDir
-          // Drop it so OpenClaw rebuilds the system prompt with correct paths on next run.
-          if (session.systemPromptReport && containsStalePath(session.systemPromptReport)) {
-            delete session.systemPromptReport;
-            modified = true;
-          }
-        }
-
-        if (modified) {
-          fs.writeFileSync(sessionsJson, JSON.stringify(sessions, null, 2), 'utf8');
-        }
-      } catch (_) {}
-    }
-  } catch (_) {}
-}
-
-// ── Helper: prepare openclaw.json for NPM (host) mode ──
-// Cleans up any Docker-specific settings that would break host execution:
-//   • Fixes corrupted sessionFile paths in sessions.json (Docker path doubling)
-//   • Drops stale skillsSnapshot with Docker skill paths (/app/skills/)
-//   • Drops stale systemPromptReport with Docker workspaceDir (/home/node/...)
-//   • Removes stale Docker-internal paths (/home/node/) → prevents path doubling
-//   • Resets gateway.bind from 'lan' back to default loopback
-//   • Patches allowedOrigins for all loopback variants (IPv4/IPv6)
-//   • Removes fake plugin entries left over from V1 or Docker runs
-function prepareConfigForNpm(port) {
-  try {
-    const cfgPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-    if (!fs.existsSync(cfgPath)) return;
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-    let modified = false;
-
-    if (!cfg.gateway) cfg.gateway = {};
-
-    // Reset bind: Docker needs 'lan'; NPM on host must use default loopback.
-    if (cfg.gateway.bind === 'lan') {
-      delete cfg.gateway.bind;
-      modified = true;
-    }
-
-    // Patch allowedOrigins so all loopback variants are accepted.
-    // Windows resolves 'localhost' → ::1; missing entries cause WS upgrade rejection.
-    if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
-    if (!cfg.gateway.auth) cfg.gateway.auth = { mode: 'token' };
-    const required = [
-      `http://localhost:${port}`,
-      `http://127.0.0.1:${port}`,
-      `http://[::1]:${port}`,
-    ];
-    const existing = cfg.gateway.controlUi.allowedOrigins || [];
-    const merged = [...new Set([...existing, ...required])];
-    if (merged.length !== existing.length) {
-      cfg.gateway.controlUi.allowedOrigins = merged;
-      modified = true;
-    }
-
-    // Fix corrupted sessionFile paths in agents/*/sessions/sessions.json.
-    fixSessionFilePaths(path.join(os.homedir(), '.openclaw'));
-
-    // Remove stale Docker-internal paths (e.g. /home/node/.openclaw) that cause
-    // path doubling when OpenClaw runs in NPM mode on the host.
-    if (removeDockerPaths(cfg, '/home/node/')) modified = true;
-
-    // V2: channels and providers are NOT plugins.
-    // If they exist in plugins.entries due to manual config or V1 caching, openclaw will fail to load them as plugins.
-    if (cfg.plugins && cfg.plugins.entries) {
-      const fakePlugins = ['whatsapp', 'zalo', 'zalouser', 'telegram', 'discord', 'litellm', 'deepseek', 'openai', 'anthropic', 'google', 'groq', 'mistral', 'xai', 'moonshot', 'together_ai', 'openrouter', 'nvidia'];
-      for (const fake of fakePlugins) {
-        if (cfg.plugins.entries[fake]) {
-          delete cfg.plugins.entries[fake];
-          modified = true;
-        }
-      }
-    }
-
-    // Coerce agents.defaults.model to string to prevent "Invalid inference format: [object Object]" errors in CLI
-    if (cfg.agents && cfg.agents.defaults && cfg.agents.defaults.model && typeof cfg.agents.defaults.model === 'object' && cfg.agents.defaults.model.primary) {
-      cfg.agents.defaults.model = cfg.agents.defaults.model.primary;
-      modified = true;
-    }
-
-    if (modified) {
-      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
-    }
-  } catch (_) {}
-}
-
-// ── Helper: prepare openclaw.json for Docker mode ──
-// Sets gateway.bind = 'lan' so the container's port mapping reaches the host.
-// NPM-specific settings (loopback-only bind) would break Docker networking.
-function prepareConfigForDocker(openclawDir) {
-  try {
-    const cfgPath = path.join(openclawDir, 'openclaw.json');
-    if (!fs.existsSync(cfgPath)) return;
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-    let modified = false;
-
-    if (!cfg.gateway) cfg.gateway = {};
-
-    // Fix corrupted sessionFile paths in agents/*/sessions/sessions.json (removes native NPM paths)
-    fixSessionFilePaths(openclawDir);
-
-    // Remove stale Docker-internal paths left by a previous container run to
-    // avoid path doubling if the user ever switches back to NPM without stopping.
-    if (removeDockerPaths(cfg, '/home/node/')) modified = true;
-
-    // Force LAN bind so Docker port mapping (-p host:18789) can reach the gateway.
-    if (cfg.gateway.bind !== 'lan') {
-      cfg.gateway.bind = 'lan';
-      modified = true;
-    }
-
-    if (!cfg.gateway.auth) cfg.gateway.auth = { mode: 'token' };
-
-    // V2: channels and providers are NOT plugins.
-    if (cfg.plugins && cfg.plugins.entries) {
-      const fakePlugins = ['whatsapp', 'zalo', 'zalouser', 'telegram', 'discord', 'litellm', 'deepseek', 'openai', 'anthropic', 'google', 'groq', 'mistral', 'xai', 'moonshot', 'together_ai', 'openrouter', 'nvidia'];
-      for (const fake of fakePlugins) {
-        if (cfg.plugins.entries[fake]) {
-          delete cfg.plugins.entries[fake];
-          modified = true;
-        }
-      }
-    }
-
-    // Coerce agents.defaults.model to string to prevent "Invalid inference format: [object Object]" errors in CLI
-    if (cfg.agents && cfg.agents.defaults && cfg.agents.defaults.model && typeof cfg.agents.defaults.model === 'object' && cfg.agents.defaults.model.primary) {
-      cfg.agents.defaults.model = cfg.agents.defaults.model.primary;
-      modified = true;
-    }
-
-    if (modified) {
-      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
-    }
-  } catch (_) {}
-}
-
-// ── Helper: kill zombie gateway processes without blocking Electron main thread ──
-async function killZombiesAsync(isWin, targetPort) {
-  if (isWin) {
-    // Step 1: polite CLI stop
-    await fireSpawn('cmd.exe', ['/c', 'openclaw.cmd', 'gateway', 'stop'], { timeout: 4000 });
-    // Step 2: kill by port ownership (most accurate)
-    await fireSpawn('powershell', [
-      '-Command',
-      `Get-NetTCPConnection -LocalPort ${targetPort} -State Listen -ErrorAction SilentlyContinue | ` +
-      `Select-Object -ExpandProperty OwningProcess -Unique | ` +
-      `ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }`
-    ], { timeout: 3000 });
-    // Step 3: WMI fallback by commandline pattern
-    await fireSpawn('powershell', [
-      '-Command',
-      `Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%openclaw%gateway%'" | ` +
-      `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
-    ], { timeout: 3000 });
-  } else {
-    await fireSpawn('openclaw', ['gateway', 'stop'], { timeout: 4000 });
-    await fireSpawn('sh', ['-c', `lsof -ti :${targetPort} | xargs kill -9 2>/dev/null || true`], { timeout: 3000 });
-    await fireSpawn('pkill', ['-f', 'openclaw.*gateway'], { timeout: 3000 });
-  }
-}
-
-// ── Helper: poll HTTP until gateway is ready, then emit platform-ready ──
-function startGatewayReadyPoller({ platformId, port, sendLog, maxRetries = 45, intervalMs = 1500 }) {
-  let attempts = 0;
-
-  const readToken = () => {
-    try {
-      const cfgPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-      if (fs.existsSync(cfgPath)) {
-        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-        return cfg?.gateway?.auth?.token || null;
-      }
-    } catch (_) {}
-    return null;
-  };
-
-  const notifyReady = (token) => {
-    const dashboardUrl = `http://127.0.0.1:${port}/?token=${token}`;
-    sendLog(`[SYSTEM] Gateway ready! Opening dashboard: ${dashboardUrl}`);
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('platform-ready', { platformId, dashboardUrl });
-    }
-  };
-
-  const poll = () => {
-    if (attempts++ >= maxRetries) {
-      sendLog('[SYSTEM] Gateway readiness timeout. Check Console for errors.');
-      return;
-    }
-
-    const token = readToken();
-    if (!token) {
-      // Token not written yet — gateway still starting; retry
-      setTimeout(poll, intervalMs);
-      return;
-    }
-
-    const req = http.get(`http://127.0.0.1:${port}/`, (res) => {
-      notifyReady(token);
-    });
-
-    req.on('error', () => setTimeout(poll, intervalMs));
-
-    // If socket hangs (no response), destroy and retry
-    req.setTimeout(1200, () => {
-      req.destroy();
-      setTimeout(poll, intervalMs);
-    });
-  };
-
-  poll();
-}
+// ── spawnPlatform ─────────────────────────────────────────────────────────────
 
 async function spawnPlatform(platformId, config, webContents) {
   if (runningProcesses.has(platformId)) return { success: false, reason: 'Already running' };
@@ -320,219 +64,174 @@ async function spawnPlatform(platformId, config, webContents) {
   let child;
 
   try {
-    const isWin = process.platform === 'win32';
-    // ── Environment Precondition Checks ────────────────────────────────────
+    const isWin    = process.platform === 'win32';
+    const runner   = resolveRunner(platformId, config);
+    const useOC    = isOpenClaw(platformId, config);
+
+    // ── Precondition checks ───────────────────────────────────────────────────
     const { execSync } = require('child_process');
     if (config.method === 'docker') {
       try {
         execSync('docker info', { stdio: 'ignore' });
-      } catch (err) {
+      } catch {
         sendLog('[SYSTEM] ERROR: Docker is not running or not installed! Please start Docker first.');
-        event.sender.send('platform-error', { platformId, error: 'Docker is not running or not installed. Please start Docker.' });
-        return;
+        return { success: false, reason: 'DOCKER_NOT_RUNNING' };
       }
-    } else {
+    } else if (useOC) {
+      // Only require openclaw CLI when it's the OpenClaw platform in NPM mode.
       try {
-        const shellOpt = isWin ? 'cmd.exe' : '/bin/bash';
-        execSync('openclaw --version', { shell: shellOpt, stdio: 'ignore' });
-      } catch (err) {
+        execSync('openclaw --version', { shell: isWin ? 'cmd.exe' : '/bin/bash', stdio: 'ignore' });
+      } catch {
         sendLog('[SYSTEM] ERROR: openclaw CLI is missing or not in PATH! Please install it via NPM first.');
         return { success: false, reason: 'NPM_MISSING_DEPENDENCY' };
       }
     }
-    // ──────────────────────────────────────────────────────────────────────
 
+    // ── Resolve container name & expand {{cwd}} ───────────────────────────────
     const containerName = config.container || `${platformId}-clawexpress`;
     let scriptArr = (config.startScript || []).map(arg => {
       if (typeof arg === 'string' && arg.includes('{{cwd}}')) {
-        let absPath = config.cwd || app.getPath('home');
-        return arg.replace('{{cwd}}', absPath);
+        return arg.replace('{{cwd}}', config.cwd || app.getPath('home'));
       }
       return arg;
     });
-    
+
+    // ── Per-method script preparation ─────────────────────────────────────────
     if (config.method === 'docker') {
-       sendLog('[SYSTEM] Running zombie cleanup...');
-       require('child_process').spawnSync('docker', ['rm', '-f', containerName]);
-       
-       const openclawDir = path.join(os.homedir(), '.openclaw');
-       if (!fs.existsSync(openclawDir)) {
-          fs.mkdirSync(openclawDir, { recursive: true });
-       }
-       
-       // Prepare config for Docker: set bind=lan, strip stale Docker paths.
-       prepareConfigForDocker(openclawDir);
-       const dockerMountSrc = openclawDir;
+      if (platformId === 'openfang' || config.registryId === 'openfang') {
+        const exists = require('child_process').spawnSync('docker', ['ps', '-a', '-q', '-f', `name=^/${containerName}$`]).stdout.toString().trim();
+        if (exists) {
+          sendLog('[SYSTEM] Saving OpenFang container state (dependencies/hands)...');
+          require('child_process').spawnSync('docker', ['commit', containerName, 'openfang-custom:latest']);
+        }
+      }
+      sendLog('[SYSTEM] Running zombie cleanup...');
+      require('child_process').spawnSync('docker', ['rm', '-f', containerName]);
 
-       // Rely entirely on the :latest tag since installer/updater handle syncing it locally
-       const targetImage = `ghcr.io/openclaw/openclaw:latest`;
+      if (useOC) {
+        // Also free the gateway port on the HOST so OpenClaw always binds to
+        // the configured port (18789) rather than auto-incrementing to 18791.
+        const gatewayPort = config.port || 18789;
+        sendLog(`[SYSTEM] Freeing host port ${gatewayPort}...`);
+        await openclawRunner.killZombiesAsync(isWin, gatewayPort);
 
-       if (scriptArr.length === 0 || scriptArr[0] !== 'docker') {
-           scriptArr = ['docker', 'run', '-i', targetImage];
-       } else {
-           // Dynamically patch the image element to the correct version over time (e.g., when they update)
-           const imageIndex = scriptArr.findIndex(el => el.startsWith('ghcr.io/openclaw/openclaw'));
-           if (imageIndex !== -1) {
-             scriptArr[imageIndex] = targetImage;
-           } else {
-             scriptArr.push(targetImage);
-           }
-       }
-       
-       // Ensure naming constraint is set securely dynamically
-       const runIndex = scriptArr.indexOf('run');
-       if (runIndex !== -1) {
-            // Strip out any potentially injected config directory mounts to enforce single-source-of-truth
-            const customMountIdx = scriptArr.findIndex(arg => typeof arg === 'string' && arg.includes(':/home/node/.openclaw'));
-            if (customMountIdx !== -1) {
-                // Remove the mount path and the preceding '-v' argument
-                if (customMountIdx > 0 && scriptArr[customMountIdx - 1] === '-v') {
-                    scriptArr.splice(customMountIdx - 1, 2);
-                } else {
-                    scriptArr.splice(customMountIdx, 1);
-                }
-            }
-            // Always inject the correct single-source-of-truth mount
-            const finalRunIndex = scriptArr.indexOf('run');
-            scriptArr.splice(finalRunIndex + 1, 0, '-v', `${dockerMountSrc}:/home/node/.openclaw`);
-           if (!scriptArr.includes('--name')) {
-               scriptArr.splice(runIndex + 1, 0, '--name', containerName);
-           }
-            // Configure the base environment and standard Ports for OpenClaw Gateway
-           const isDefaultPlatform = platformId === 'openclaw' || config.registryId === 'openclaw' || config.name?.toLowerCase().includes('openclaw') || !config.registryId;
-           if (isDefaultPlatform) {
-               const nameIndex = scriptArr.indexOf('--name');
-               const injectIndex = nameIndex !== -1 ? nameIndex + 2 : runIndex + 1;
-               
-               if (!scriptArr.includes('OPENCLAW_GATEWAY_BIND=lan')) {
-                   scriptArr.splice(injectIndex, 0, '-e', 'OPENCLAW_GATEWAY_BIND=lan');
-               }
-               // Force bind 0.0.0.0 inside the docker namespace to allow host communication
-               if (!scriptArr.includes('HOST=0.0.0.0')) {
-                   scriptArr.splice(injectIndex, 0, '-e', 'HOST=0.0.0.0');
-               }
-               
-               const portMap = `${config.port || 18789}:18789`;
-               if (!scriptArr.includes(portMap)) {
-                   scriptArr.splice(injectIndex, 0, '-p', portMap);
-               }
-               
-           }
-       }
+        scriptArr = openclawRunner.prepareDockerScript(scriptArr, config, containerName);
+      } else {
+        scriptArr = defaultRunner.prepareDockerScript(scriptArr, config, containerName);
+      }
+
     } else if (config.method === 'npm') {
-       // '--allow-unconfigured' bypasses the gateway.mode validation check.
-       // Config: uses default ~/.openclaw/openclaw.json (single source of truth).
-       scriptArr = ['openclaw', 'gateway', '--allow-unconfigured'];
-
-       const targetPort = config.port || 18789;
-
-       // ── Step 1: Prepare config for NPM mode (reset Docker settings, patch origins) ──
-       prepareConfigForNpm(targetPort);
-
-       // ── Step 2: Kill zombie gateway processes (async, non-blocking) ──
-       // Runs in background so Electron main thread stays responsive (no "Not Responding").
-       // The gateway is spawned immediately after; if a zombie still holds the port,
-       // openclaw will attach to stdout of the existing process instead of failing.
-       sendLog(`[SYSTEM] Pre-flight: killing any zombie openclaw instances...`);
-       await killZombiesAsync(isWin, targetPort);
-
-       sendLog(`[SYSTEM] NPM mode: starting OpenClaw gateway...`);
+      if (useOC) {
+        // Override script to use the openclaw CLI gateway command.
+        scriptArr = ['openclaw', 'gateway', '--allow-unconfigured'];
+        const targetPort = config.port || 18789;
+        openclawRunner.prepareConfigForNpm(targetPort);
+        sendLog('[SYSTEM] Pre-flight: killing any zombie openclaw instances...');
+        await openclawRunner.killZombiesAsync(isWin, targetPort);
+        sendLog('[SYSTEM] NPM mode: starting OpenClaw gateway...');
+      } else {
+        scriptArr = defaultRunner.prepareNpmScript(scriptArr);
+      }
     } else {
-       if (scriptArr.length === 0) scriptArr = ['npm', 'start'];
+      if (scriptArr.length === 0) scriptArr = ['npm', 'start'];
     }
 
+    // ── Windows .cmd suffix ───────────────────────────────────────────────────
     let cmd = scriptArr[0];
-    // On Windows, .cmd scripts must run through cmd.exe (shell: true).
-    // DO NOT manually add .cmd suffix - let the shell resolve it.
-    // Only npm/npx/openclaw need explicit .cmd on Windows when shell:false.
     if (isWin && (cmd === 'npm' || cmd === 'npx' || cmd === 'openclaw')) {
       cmd += '.cmd';
     }
 
-    // Load Global API keys from Single Source of Truth so NPM mode can parse ${API_KEY} variables
+    // ── Build environment ─────────────────────────────────────────────────────
+    // For OpenClaw: merge global API keys from ~/.openclaw/openclaw.json so
+    // SSOT env vars (e.g. ${OPENAI_API_KEY}) are resolved at spawn time.
     let ssotEnv = {};
-    try {
-      const cfgLoc = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-      if (fs.existsSync(cfgLoc)) {
-        const fullCfg = JSON.parse(fs.readFileSync(cfgLoc, 'utf8'));
-        if (fullCfg.env) ssotEnv = fullCfg.env;
-      }
-    } catch (_) {}
-
-    // Gateway uses default ~/.openclaw/openclaw.json — single source of truth.
-    // HOST is intentionally NOT overridden: forcing 127.0.0.1 (IPv4-only) breaks
-    // Chrome's IPv6 WebSocket connections, causing message echo delay in the chat UI.
+    if (useOC) {
+      try {
+        const cfgLoc = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+        if (fs.existsSync(cfgLoc)) {
+          const fullCfg = JSON.parse(fs.readFileSync(cfgLoc, 'utf8'));
+          if (fullCfg.env) ssotEnv = fullCfg.env;
+        }
+      } catch (_) {}
+    }
     const spawnEnv = { ...process.env, ...ssotEnv, ...(config.env || {}) };
 
     sendLog(`[SYSTEM] Starting: ${cmd} ${scriptArr.slice(1).join(' ')}`);
 
-    // On Windows, run via cmd.exe /c ONLY for .cmd scripts (like npm/npx).
-    // Native executables (like docker.exe) should be spawned natively to avoid
-    // console allocation failures and quote mangling in packaged GUI mode.
+    // ── Spawn ─────────────────────────────────────────────────────────────────
     const isCmdScript = isWin && cmd.endsWith('.cmd');
-    const spawnArgs = isCmdScript
+    const spawnArgs   = isCmdScript
       ? ['cmd.exe', ['/c', cmd, ...scriptArr.slice(1)]]
       : [cmd, scriptArr.slice(1)];
 
     child = spawn(spawnArgs[0], spawnArgs[1], {
       cwd: config.cwd || app.getPath('home'),
-      env: spawnEnv
+      env: spawnEnv,
     });
 
     sendLog(`[SYSTEM] Process started (PID: ${child.pid})`);
 
-    // ── Gateway readiness detection (NPM mode) ────────────────────────────
-    // Strategy: parse stdout for startup signals, then poll HTTP endpoint.
-    // The poller is also started unconditionally after a short delay to handle
-    // the "attach to existing" case where no startup signals are ever emitted.
+    // ── Readiness detection — fully delegated to the runner ───────────────────
+    // processManager has zero app-specific knowledge here.
+    // Each runner owns its own detectReadiness() and getFallbackPollerConfig().
     let gatewayReadyEmitted = false;
-    let pollerStarted = false;
+    let pollerStarted       = false;
 
-    const maybeStartPoller = () => {
-      if (pollerStarted || gatewayReadyEmitted) return;
+    const emitReady = (dashboardUrl) => {
+      gatewayReadyEmitted = true;
       pollerStarted = true;
-      startGatewayReadyPoller({
-        platformId,
-        port: config.port || 18789,
-        sendLog,
-        maxRetries: 45,
-        intervalMs: 1500,
-      });
+      sendLog(`[SYSTEM] Gateway ready! Opening dashboard: ${dashboardUrl}`);
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('platform-ready', { platformId, dashboardUrl });
+      }
     };
 
     child.stdout.on('data', (data) => {
       const text = data.toString();
       text.split('\n').filter(Boolean).forEach(line => sendLog(line));
 
-      // ONLY start polling HTTP (to fetch the token and verify the API is up)
-      // when the gateway explicitly announces it is ready or attached. 
-      // Do not use generic strings like '[gateway]' as it starts too early.
-      if (!gatewayReadyEmitted && (
-        text.includes('Waiting for incoming connections') ||
-        text.includes('Process already running') ||
-        text.includes('[gateway] ready') ||
-        text.includes('host mounted at')
-      )) {
-        maybeStartPoller();
+      if (!gatewayReadyEmitted) {
+        // Ask the runner whether this stdout chunk signals readiness.
+        const ready = runner.detectReadiness(text, config);
+        if (ready) emitReady(ready.dashboardUrl);
       }
     });
 
-    // Fallback: if stdout signals never arrive (e.g., openclaw attaches silently
-    // to an already-running process), start the poller unconditionally after a
-    // short grace period so the dashboard button always enables.
-    if (config.method === 'npm') {
-      setTimeout(maybeStartPoller, 8000);
-    }
+    // Fallback: if detectReadiness never fires (silent attach / already-running),
+    // start the HTTP poller using runner-provided config after a grace period.
+    const fallbackDelay = config.method === 'npm' ? 8000 : 20000;
+    setTimeout(() => {
+      if (pollerStarted || gatewayReadyEmitted) return;
+      const pollerConfig = runner.getFallbackPollerConfig(config);
+      sendLog(`[SYSTEM] Fallback: polling dashboard on port ${pollerConfig.port}...`);
+      pollerStarted = true;
+      runner.startReadyPoller({
+        platformId,
+        port:         pollerConfig.port,
+        requireToken: pollerConfig.requireToken,
+        readToken:    pollerConfig.readToken,
+        sendLog,
+        maxRetries:   45,
+        intervalMs:   1500,
+      });
+    }, fallbackDelay);
 
     child.stderr.on('data', (data) => {
-      data.toString().split('\n').filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`));
+      const text = data.toString();
+      text.split('\n').filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`));
+      // Some apps (e.g. OpenFang) print readiness announcements to stderr.
+      if (!gatewayReadyEmitted) {
+        const ready = runner.detectReadiness(text, config);
+        if (ready) emitReady(ready.dashboardUrl);
+      }
+
     });
 
     child.on('exit', (code) => {
       sendLog(`[SYSTEM] Process exited with code ${code}`);
       runningProcesses.delete(platformId);
-      // If the poller already started, gateway may be running externally (attach mode).
-      // Don't send STOPPED because the HTTP poller will confirm the real state.
       if (!pollerStarted) {
         const win = BrowserWindow.getAllWindows()[0];
         if (win && !win.isDestroyed()) {
@@ -543,62 +242,13 @@ async function spawnPlatform(platformId, config, webContents) {
 
     runningProcesses.set(platformId, { process: child, startTime: Date.now() });
 
-    // ── Pairing request watcher ─────────────────────────────────────────────
-    // Poll ~/.openclaw/credentials/zalouser-pairing.json every 5s.
-    // When a new pending entry appears, notify the renderer to show an approval modal.
-    const notifiedCodes = new Set();
-    const PAIRING_CHANNELS = ['zalouser'];
-    const pairingPollId = setInterval(() => {
-      const openclawDir = path.join(os.homedir(), '.openclaw');
-      for (const ch of PAIRING_CHANNELS) {
-        const pairingFile = path.join(openclawDir, 'credentials', `${ch}-pairing.json`);
-        try {
-          if (!fs.existsSync(pairingFile)) continue;
-          const data = JSON.parse(fs.readFileSync(pairingFile, 'utf8'));
-          const entries = Array.isArray(data) ? data : (data.pending || Object.values(data));
-          for (const entry of entries) {
-            const code = entry.code || entry.pairingCode;
-            if (!code || notifiedCodes.has(code)) continue;
-            notifiedCodes.add(code);
-            const win = BrowserWindow.getAllWindows()[0];
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('pairing-request', {
-                channel: ch,
-                code,
-                senderId: entry.senderId || entry.userId || '?',
-                senderName: entry.senderName || entry.name || 'Unknown',
-                expiresAt: entry.expiresAt || null,
-              });
-            }
-          }
-        } catch (_) {}
-      }
-    }, 5000);
-
-    child.on('exit', () => clearInterval(pairingPollId));
-
-
-    // Apply chosen model via CLI after gateway warms up (20s grace period)
-    if (config.method === 'docker' && config.cwd) {
-      const chosenModelPath = path.join(config.cwd, '.chosen-model');
-      if (fs.existsSync(chosenModelPath)) {
-        const chosenModel = fs.readFileSync(chosenModelPath, 'utf8').trim();
-        if (chosenModel && chosenModel !== 'openrouter/auto') {
-          sendLog(`[SYSTEM] Will apply model "${chosenModel}" in 20s after gateway warms up...`);
-          setTimeout(() => {
-            sendLog(`[SYSTEM] Applying model: ${chosenModel}`);
-            const result = require('child_process').spawnSync(
-              'docker', ['exec', containerName, 'openclaw', 'models', 'set', chosenModel],
-              { encoding: 'utf8', timeout: 15000 }
-            );
-            if (result.status === 0) {
-              sendLog(`[SUCCESS] Model set to: ${chosenModel}`);
-            } else {
-              sendLog(`[WARN] Model set failed (may need manual: openclaw models set ${chosenModel}): ${result.stderr || ''}`);
-            }
-          }, 20000);
-        }
-      }
+    // ── Post-start hooks ────────────────────────────────────────
+    if (useOC) {
+      openclawRunner.startPairingWatcher(platformId, child);
+      openclawRunner.scheduleModelApply(config, containerName, sendLog);
+    } else if (runner === openfangRunner && typeof openfangRunner.scheduleVersionCheck === 'function') {
+      const win = BrowserWindow.getAllWindows()[0];
+      openfangRunner.scheduleVersionCheck(config, containerName, sendLog, win?.webContents, platformId);
     }
 
     return { success: true, pid: child.pid };
@@ -609,8 +259,13 @@ async function spawnPlatform(platformId, config, webContents) {
   }
 }
 
-function stopPlatform(platformId, webContents, method, container) {
+// ── stopPlatform ──────────────────────────────────────────────────────────────
+
+async function stopPlatform(platformId, webContents, method, container) {
   const entry = runningProcesses.get(platformId);
+  const isWin = process.platform === 'win32';
+  const util = require('util');
+  const execAsync = util.promisify(require('child_process').exec);
 
   const sendLog = (msg) => {
     if (webContents && !webContents.isDestroyed()) {
@@ -618,25 +273,52 @@ function stopPlatform(platformId, webContents, method, container) {
     }
   };
 
-  const isWin = process.platform === 'win32';
-
   try {
     if (method === 'docker') {
       const containerName = container || `${platformId}-clawexpress`;
-      sendLog(`[SYSTEM] Destroying container ${containerName}...`);
-      require('child_process').spawnSync('docker', ['rm', '-f', containerName]);
+      const isOpenfang = platformId === 'openfang' ||
+        (entry && entry.process.spawnargs && entry.process.spawnargs.join(' ').includes('openfang'));
+
+      // ── Optimistic UI: mark stopped immediately so user isn't blocked ──────
+      runningProcesses.delete(platformId);
+      if (webContents && !webContents.isDestroyed()) {
+        webContents.send('platform-status-change', { platformId, status: 'STOPPING' });
+      }
+
+      // ── Commit + rm in background (non-blocking) ───────────────────────────
+      (async () => {
+        if (isOpenfang) {
+          // Only commit if something was installed since last commit (flag file)
+          const flagCheck = require('child_process').spawnSync(
+            'docker', ['exec', containerName, 'test', '-f', '/tmp/.needs-commit'],
+            { timeout: 3000 }
+          );
+          const needsCommit = flagCheck.status === 0;
+
+          if (needsCommit) {
+            sendLog(`[SYSTEM] Changes detected — saving container state...`);
+            try {
+              await execAsync(`docker commit ${containerName} openfang-custom:latest`, { timeout: 120000 });
+              sendLog(`[SYSTEM] Container state saved.`);
+            } catch (e) {
+              sendLog(`[WARN] Commit failed (state may not be saved): ${e.message}`);
+            }
+          } else {
+            sendLog(`[SYSTEM] No changes detected — skipping commit.`);
+          }
+        }
+
+        sendLog(`[SYSTEM] Destroying container ${containerName}...`);
+        require('child_process').spawn('docker', ['rm', '-f', containerName], { detached: true, stdio: 'ignore' });
+
+        if (webContents && !webContents.isDestroyed()) {
+          webContents.send('platform-status-change', { platformId, status: 'STOPPED' });
+        }
+      })();
+
+      return { success: true };
+
     } else if (method === 'npm') {
-      // Two-step kill for npm method on Windows:
-      //
-      // Step 1 — kill the tracked cmd.exe process tree (if we have a PID).
-      //   openclaw.cmd uses `endLocal & goto #_undefined#` which can cause
-      //   node.exe to be re-parented away from cmd.exe on some Windows builds,
-      //   so /T alone is not always sufficient.
-      //
-      // Step 2 — kill by process name (belt-and-suspenders).
-      //   This catches any orphaned openclaw.mjs node processes that survived
-      //   step 1, or processes that were never tracked (zombies from a previous
-      //   ClawExpress session).
       if (entry) {
         const pid = entry.process.pid;
         sendLog(`[SYSTEM] Terminating process tree (PID: ${pid})...`);
@@ -646,20 +328,20 @@ function stopPlatform(platformId, webContents, method, container) {
           try { process.kill(-pid, 'SIGTERM'); } catch (_) { entry.process.kill('SIGTERM'); }
         }
       } else {
-        sendLog(`[SYSTEM] No tracked PID — falling back to process-name kill...`);
+        sendLog('[SYSTEM] No tracked PID — falling back to process-name kill...');
       }
 
-      // Always run name-based kill to catch orphans / detached node processes.
+      // Belt-and-suspenders: sweep orphaned openclaw node processes.
       if (isWin) {
-        sendLog(`[SYSTEM] Sweeping orphaned openclaw.mjs processes...`);
-        require('child_process').spawnSync(
-          'powershell',
-          ['-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\\.js|openclaw\\.mjs).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
-          { timeout: 8000, windowsHide: true }
-        );
+        sendLog('[SYSTEM] Sweeping orphaned openclaw.mjs processes...');
+        require('child_process').spawnSync('powershell', [
+          '-Command',
+          "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\\.js|openclaw\\.mjs).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+        ], { timeout: 8000, windowsHide: true });
       } else {
         require('child_process').spawnSync('pkill', ['-f', '.*openclaw.*(index\\.js|openclaw\\.mjs).*'], { timeout: 5000 });
       }
+
     } else {
       if (!entry) return { success: false, reason: 'Not running' };
       sendLog(`[SYSTEM] Sending SIGTERM to PID ${entry.process.pid}...`);
@@ -673,4 +355,13 @@ function stopPlatform(platformId, webContents, method, container) {
   }
 }
 
-module.exports = { runningProcesses, spawnPlatform, stopPlatform, prepareConfigForDocker, prepareConfigForNpm };
+// ── Exports ───────────────────────────────────────────────────────────────────
+
+module.exports = {
+  runningProcesses,
+  spawnPlatform,
+  stopPlatform,
+  // Re-export for legacy callers (configHandler.js, platformInstaller.js)
+  prepareConfigForDocker: openclawRunner.prepareConfigForDocker,
+  prepareConfigForNpm:    openclawRunner.prepareConfigForNpm,
+};

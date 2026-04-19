@@ -36,6 +36,8 @@ const GeneralTab = ({
   platform,
   handleDelete,
   onClose,
+  isUpdating,
+  handleUpdate,
 }) => {
   const { updatePlatform } = usePlatformStore();
   const importRef = useRef(null);
@@ -289,10 +291,29 @@ const GeneralTab = ({
       </div>
     )}
 
-    {/* ── Portability ── */}
+    {/* ── Maintenance & Portability ── */}
     <div className={styles.section}>
-      <div className={styles.sectionTitle}>Portability</div>
+      <div className={styles.sectionTitle}>Maintenance & Portability</div>
       <div style={{ display: 'flex', gap: '8px' }}>
+        {schema.features?.includes('updatable') && (
+          <button
+            onClick={handleUpdate}
+            disabled={isUpdating}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              background: 'transparent', border: '1px solid var(--border)',
+              color: isUpdating ? 'var(--text-muted)' : 'var(--text-secondary)',
+              padding: '6px 12px', borderRadius: '5px',
+              cursor: isUpdating ? 'not-allowed' : 'pointer', fontSize: '12px',
+              fontFamily: 'var(--font-primary)', transition: 'all 0.15s',
+            }}
+            onMouseEnter={e => { if (!isUpdating) { e.currentTarget.style.borderColor = 'var(--border-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = isUpdating ? 'var(--text-muted)' : 'var(--text-secondary)'; }}
+          >
+            <RotateCw size={12} style={{ animation: isUpdating ? 'spin 1.5s linear infinite' : 'none' }} />
+            {isUpdating ? 'Updating…' : 'Update Source'}
+          </button>
+        )}
         <button
           onClick={handleExport}
           style={{
@@ -332,8 +353,9 @@ const GeneralTab = ({
           <Upload size={12} /> {importing ? 'Importing…' : 'Import Config'}
         </button>
       </div>
-      <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px', display: 'block' }}>
-        Export saves this platform's configuration as a JSON file. Import restores from a previously exported file.
+      <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px', display: 'block', lineHeight: '1.4' }}>
+        Export/Import lets you backup or restore your config JSON.
+        {schema.features?.includes('updatable') && ' "Update Source" pulls the latest code and rebuilds the container.'}
       </span>
     </div>
 

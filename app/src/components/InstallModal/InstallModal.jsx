@@ -166,10 +166,17 @@ const InstallModal = ({ isOpen, onClose, platform, onInstalled }) => {
   const requireAuth = useRequireAuth();
   const terminalRef = useRef(null);
 
+  const hasDocker = platform?.installScript?.docker !== undefined || platform?.startScript?.docker !== undefined || platform?.method === 'docker' || platform?.method?.includes('docker');
+  const hasNpm = platform?.installScript?.npm !== undefined || platform?.startScript?.npm !== undefined || platform?.method === 'npm' || platform?.method?.includes('npm');
+
   useEffect(() => {
     if (!isOpen) {
       setStep(1); setLogs([]); setInstalling(false); setMethod(''); setPreflightState({ checking: false, checks: [], isSuccess: false });
     } else if (platform) {
+      if (hasDocker && !hasNpm) setMethod('docker');
+      else if (hasNpm && !hasDocker) setMethod('npm');
+      else setMethod('');
+
       if (platform.configSchema) {
         const initialConfig = {};
         platform.configSchema.forEach(field => {
@@ -180,7 +187,7 @@ const InstallModal = ({ isOpen, onClose, platform, onInstalled }) => {
         setConfig({});
       }
     }
-  }, [isOpen, platform]);
+  }, [isOpen, platform, hasDocker, hasNpm]);
 
   useEffect(() => {
     if (step === 2 && isOpen && method) {
@@ -271,6 +278,15 @@ const InstallModal = ({ isOpen, onClose, platform, onInstalled }) => {
         platformEnv['CLAWEXPRESS_PROVIDER'] = llm.provider;
       }
 
+      // Automatically map any config fields that define 'envVar' to the environment
+      if (platform.configSchema) {
+        platform.configSchema.forEach(field => {
+          if (field.envVar && config[field.id]) {
+            platformEnv[field.envVar] = config[field.id];
+          }
+        });
+      }
+
       addPlatform({
         id: Math.random().toString(36).substring(2, 9), // Use a unique ID for multiple instances
         registryId: platform.id,
@@ -313,15 +329,25 @@ const InstallModal = ({ isOpen, onClose, platform, onInstalled }) => {
               <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '24px' }}>Choose how ClawExpress should manage {platform?.name}.</p>
               
               <div className={styles.methodGrid}>
-                <div className={`${styles.methodCard} ${method === 'docker' ? styles.selected : ''}`} onClick={() => setMethod('docker')}>
+                <div 
+                  className={`${styles.methodCard} ${method === 'docker' ? styles.selected : ''}`} 
+                  onClick={() => hasDocker && setMethod('docker')}
+                  style={!hasDocker ? { opacity: 0.4, cursor: 'not-allowed', filter: 'grayscale(1)' } : {}}
+                >
                   <div style={{ marginBottom: '12px', display: 'flex' }}><DockerLogo size={28} /></div>
                   <div style={{ fontWeight: 500, marginBottom: '4px' }}>Docker / Podman</div>
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Isolated container. Best for stability and uninstalls. Requires Docker Desktop.</div>
+                  {!hasDocker && <div style={{ fontSize: '11px', color: 'var(--status-error)', marginTop: '8px', fontWeight: 500 }}>Not supported by {platform?.name}</div>}
                 </div>
-                <div className={`${styles.methodCard} ${method === 'npm' ? styles.selected : ''}`} onClick={() => setMethod('npm')}>
+                <div 
+                  className={`${styles.methodCard} ${method === 'npm' ? styles.selected : ''}`} 
+                  onClick={() => hasNpm && setMethod('npm')}
+                  style={!hasNpm ? { opacity: 0.4, cursor: 'not-allowed', filter: 'grayscale(1)' } : {}}
+                >
                   <div style={{ marginBottom: '12px', display: 'flex' }}><NpmLogo size={28} /></div>
                   <div style={{ fontWeight: 500, marginBottom: '4px' }}>NPM (Node)</div>
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Runs natively on your host OS. Faster, but requires Node.js globals.</div>
+                  {!hasNpm && <div style={{ fontSize: '11px', color: 'var(--status-error)', marginTop: '8px', fontWeight: 500 }}>Not supported by {platform?.name}</div>}
                 </div>
               </div>
             </div>

@@ -9,7 +9,37 @@ const { ipcMain, app } = require('electron');
 const { spawn } = require('child_process');
 const fs   = require('fs');
 const path = require('path');
+const os   = require('os');
 const log  = require('./logger');
+
+const git  = require('isomorphic-git');
+const http = require('isomorphic-git/http/node');
+
+async function cloneRepoLocally(url, targetDir, sendLog) {
+  sendLog(`[SYSTEM] Starting JS-native git clone from ${url}...`);
+  sendLog(`[SYSTEM] This bypasses the need for Git to be installed on your system!`);
+  try {
+    if (fs.existsSync(targetDir)) {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(targetDir, { recursive: true });
+    await git.clone({
+      fs,
+      http,
+      dir: targetDir,
+      url,
+      singleBranch: true,
+      depth: 1
+    });
+    sendLog('[SUCCESS] JS-native clone complete.');
+    return true;
+  } catch (err) {
+    sendLog(`[ERROR] Internal git clone failed: ${err.message}`);
+    return false;
+  }
+}
+
+
 
 // ── Async fire-and-forget spawn (never blocks main thread) ───────────────────
 // Replaces spawnSync throughout uninstall flow so Electron stays responsive.
@@ -60,101 +90,14 @@ function compileTemplate(template, context) {
 }
 
 // ── Finalize Config ───────────────────────────────────────────────────────────
-// Writes the compiled openclaw.json config to ~/.openclaw/ (single source of truth)
-function finalizeConfig(targetDir, config, configMapping, sendLog) {
-  if (config && configMapping) {
-    sendLog('[INFO] Compiling dynamic Global Configuration...');
-    try {
-      const os = require('os');
-      const openclawDir = path.join(os.homedir(), '.openclaw');
-      if (!fs.existsSync(openclawDir)) fs.mkdirSync(openclawDir, { recursive: true });
-      const configPath = path.join(openclawDir, 'openclaw.json');
-
-      const llm = config.llm_config || {};
-
-      let providerPrefix = llm.provider || 'openai';
-      if (providerPrefix.toLowerCase() === 'openrouter') providerPrefix = 'openrouter';
-
-      const rawModel = llm.model || '';
-      const isOpenRouter = providerPrefix === 'openrouter';
-
-      const hasProviderPrefix = rawModel.toLowerCase().startsWith(providerPrefix + '/');
-      const assembledModel = hasProviderPrefix ? rawModel : `${providerPrefix}/${rawModel}`;
-      const modelFull = isOpenRouter ? 'openrouter/auto' : assembledModel;
-
-      sendLog(`[INFO] Provider prefix: ${providerPrefix}`);
-      sendLog(`[INFO] Chosen model: ${assembledModel}`);
-
-      const dynamicEnv = config.env || {};
-      if (llm.provider && llm.key) {
-        const envKey = `${llm.provider.toUpperCase()}_API_KEY`;
-        dynamicEnv[envKey] = llm.key;
-        if (llm.baseUrl) {
-          dynamicEnv[`${llm.provider.toUpperCase()}_BASE_URL`] = llm.baseUrl;
-        }
-      }
-      if (config.telegram_token) dynamicEnv.TELEGRAM_BOT_TOKEN = config.telegram_token;
-
-      // Merge into existing config (preserve runtime fields)
-      let existing = {};
-      try {
-        if (fs.existsSync(configPath)) {
-          existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        }
-      } catch (_) {}
-
-      existing.gateway = existing.gateway || { mode: 'local' };
-      existing.gateway.auth = existing.gateway.auth || { mode: 'token' };
-      
-      existing.env = { ...(existing.env || {}), ...dynamicEnv };
-      existing.agents = existing.agents || {};
-      existing.agents.defaults = existing.agents.defaults || {};
-      existing.agents.defaults.model = { primary: modelFull };
-      existing.plugins = existing.plugins || {};
-      existing.plugins.entries = {
-        ...(existing.plugins.entries || {}),
-        zalouser: { enabled: true },
-        whatsapp: { enabled: true },
-      };
-      existing.channels = {
-        ...(existing.channels || {}),
-        telegram: { enabled: Array.isArray(config.channels) && config.channels.includes('telegram') },
-        discord:  { enabled: Array.isArray(config.channels) && config.channels.includes('discord') },
-      };
-
-      if (llm.provider === 'custom' || llm.baseUrl) {
-        existing.models = existing.models || {};
-        existing.models.providers = existing.models.providers || {};
-        existing.models.providers.litellm = {
-          baseUrl: llm.baseUrl,
-          apiKey: '${' + `${llm.provider.toUpperCase()}_API_KEY` + '}',
-          api: 'openai-completions',
-          models: [{ id: rawModel.replace(/^(openai|litellm)\//i, ''), name: 'Custom', input: ['text'], contextWindow: 128000 }],
-        };
-        existing.agents.defaults.model.primary = `litellm/${rawModel.replace(/^(openai|litellm)\//i, '')}`;
-      } else if (llm.provider === 'deepseek') {
-        const modelId = modelFull.replace('deepseek/', '');
-        existing.models = existing.models || {};
-        existing.models.providers = existing.models.providers || {};
-        existing.models.providers.litellm = {
-          baseUrl: 'https://api.deepseek.com',
-          apiKey: '${DEEPSEEK_API_KEY}',
-          api: 'openai-completions',
-          models: [{ id: modelId, name: 'DeepSeek Model', input: ['text'], contextWindow: 128000, maxTokens: 8192 }]
-        };
-        existing.agents.defaults.model.primary = `litellm/${modelId}`;
-      }
-
-      sendLog(`[INFO] Config model: ${existing.agents.defaults.model.primary}`);
-      fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
-      fs.writeFileSync(path.join(targetDir, '.chosen-model'), assembledModel);
-      sendLog(`[SUCCESS] Configuration written to ${configPath}. Chosen model saved: ${assembledModel}`);
-    } catch (err) {
-      sendLog(`[WARN] Config compiler error: ${err.message}`);
-      log.error('[platformInstaller] Config compiler error:', err);
-    }
-  } else if (config) {
-    fs.writeFileSync(path.join(targetDir, '.openclaw.json'), JSON.stringify(config, null, 2));
+function finalizeConfig(platformId, targetDir, config, configMapping, sendLog) {
+  const { getAdapter } = require('./platformRegistry');
+  const adapterId = platformId || (configMapping && configMapping.type);
+  const adapter = getAdapter(adapterId);
+  if (adapter && adapter.finalizeConfig) {
+    adapter.finalizeConfig(config, targetDir, sendLog);
+  } else {
+    sendLog(`[WARN] No adapter found for ${adapterId} to finalize config.`);
   }
 }
 
@@ -211,23 +154,36 @@ async function uninstallPlatform(platformId, method, container, cwd, runningProc
   }
 
   // ── Step 4: Delete platform working directory ────────────────────────────────
-  if (cwd && fs.existsSync(cwd)) {
-    await fs.promises.rm(cwd, { recursive: true, force: true });
+  const os = require('os');
+  const targetDir = path.join(require('electron').app.getPath('userData'), 'platforms', platformId);
+  if (fs.existsSync(targetDir)) {
+    log.info(`[Uninstall] Deleting working directory: ${targetDir}`);
+    await fs.promises.rm(targetDir, { recursive: true, force: true });
   }
 
-  // ── Step 5: Wipe ~/.openclaw (only if user explicitly opted in) ─────────────
-  // Default is false — skipping keeps config intact for other installed platforms
-  // (e.g. removing NPM mode while Docker mode is still active, or vice versa).
-  if (isOpenClaw && wipeConfig) {
+  // ── Step 5: Wipe ~/.openclaw or ~/.openfang (only if user explicitly opted in) ─────────────
+  if (wipeConfig) {
     try {
-      const os = require('os');
-      const openclawDir = path.join(os.homedir(), '.openclaw');
-      if (fs.existsSync(openclawDir)) {
-        log.info(`[Uninstall] Wiping OpenClaw system directory: ${openclawDir}`);
-        await fs.promises.rm(openclawDir, { recursive: true, force: true });
+      if (isOpenClaw) {
+        const openclawDir = path.join(os.homedir(), '.openclaw');
+        if (fs.existsSync(openclawDir)) {
+          log.info(`[Uninstall] Wiping OpenClaw system directory: ${openclawDir}`);
+          await fs.promises.rm(openclawDir, { recursive: true, force: true });
+        }
+      }
+      if (platformId === 'openfang' || registryId === 'openfang') {
+        const openfangDir = path.join(os.homedir(), '.openfang');
+        if (fs.existsSync(openfangDir)) {
+          log.info(`[Uninstall] Wiping OpenFang system directory: ${openfangDir}`);
+          await fs.promises.rm(openfangDir, { recursive: true, force: true });
+        }
+        try {
+          log.info(`[Uninstall] Removing OpenFang custom preserved image (if any)...`);
+          await runCmd('docker', ['rmi', '-f', 'openfang-custom:latest'], { timeout: 15000 });
+        } catch (_) {}
       }
     } catch (err) {
-      log.error(`[Uninstall] Failed to remove ~/.openclaw: ${err.message}`);
+      log.error(`[Uninstall] Failed to wipe config directories: ${err.message}`);
     }
   }
 
@@ -258,9 +214,17 @@ function registerPlatformInstallerHandlers(runningProcesses) {
       return { success: false, reason: err.message };
     }
 
-    const doFinalizeConfig = () => finalizeConfig(targetDir, config, configMapping, sendLog);
+    const isOpenfangPlatform = platformId === 'openfang';
+    const openfangDir = path.join(os.homedir(), '.openfang');
+    // For OpenFang, the canonical cwd is ~/.openfang (single source of truth)
+    const resolvedCwd = isOpenfangPlatform ? openfangDir : targetDir;
+    if (isOpenfangPlatform) {
+      sendLog(`[INFO] OpenFang: canonical config dir is ${openfangDir}`);
+    }
 
-    return new Promise((resolve) => {
+    const doFinalizeConfig = () => finalizeConfig(platformId, targetDir, config, configMapping, sendLog);
+
+    return new Promise(async (resolve) => {
       try {
         const isWin = process.platform === 'win32';
         
@@ -304,7 +268,7 @@ function registerPlatformInstallerHandlers(runningProcesses) {
             } else {
               sendLog('[WARN] openclaw CLI not found in PATH yet. You may need to restart your terminal or add npm global bin to PATH.');
             }
-            resolve({ success: true, cwd: targetDir });
+            resolve({ success: true, cwd: resolvedCwd });
           });
           return;
         }
@@ -312,15 +276,37 @@ function registerPlatformInstallerHandlers(runningProcesses) {
         if (!installScript || installScript.length === 0) {
           sendLog('[INFO] No installation script provided by Cloud Registry, keeping empty directory...');
           doFinalizeConfig();
-          resolve({ success: true, cwd: targetDir });
+          resolve({ success: true, cwd: resolvedCwd });
           return;
         }
 
         let cmd = installScript[0];
+        let args = installScript.slice(1);
+
+        // ── Git-less interception for Docker builds ──
+        if (cmd === 'docker' && args[0] === 'build') {
+          // If rebuilding, we must clear the saved custom image
+          if (isOpenfangPlatform) {
+            sendLog('[INFO] Clearing old OpenFang container state before building...');
+            require('child_process').spawnSync('docker', ['rmi', '-f', 'openfang-custom:latest']);
+          }
+
+          const gitUrlIndex = args.findIndex(a => typeof a === 'string' && a.startsWith('http') && a.endsWith('.git'));
+          if (gitUrlIndex !== -1) {
+            const gitUrl = args[gitUrlIndex];
+            const cloneDir = path.join(targetDir, 'source');
+            const cloneSuccess = await cloneRepoLocally(gitUrl, cloneDir, sendLog);
+            if (!cloneSuccess) {
+              resolve({ success: false, reason: 'Failed to clone repository internally without Git' });
+              return;
+            }
+            args[gitUrlIndex] = cloneDir;
+          }
+        }
+
         if (isWin && (cmd === 'npm' || cmd === 'npx' || cmd === 'docker')) {
           if (cmd === 'npm' || cmd === 'npx') cmd += '.cmd';
         }
-        const args = installScript.slice(1);
         sendLog(`[INFO] Executing: ${cmd} ${args.join(' ')}`);
 
         const child = spawn(cmd, args, { 
@@ -339,7 +325,7 @@ function registerPlatformInstallerHandlers(runningProcesses) {
           if (code === 0) {
             sendLog('[SUCCESS] Execution completed successfully.');
             doFinalizeConfig();
-            resolve({ success: true, cwd: targetDir });
+            resolve({ success: true, cwd: resolvedCwd });
           } else {
             sendLog(`[ERROR] Execution failed with exit code ${code}`);
             resolve({ success: false, reason: `Exit code ${code}` });

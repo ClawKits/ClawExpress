@@ -74,9 +74,20 @@ const saveSettings = (data) => {
 let mainWindow;
 let tray = null;
 
+// Helper function to safely resolve paths in both Dev and Prod (ASAR)
+function getIconPath() {
+  if (app.isPackaged) {
+    // In production, __dirname is typically inside app.asar/dist-electron/main
+    return path.join(__dirname, '../../public/logo.png');
+  }
+  // In dev mode, __dirname may be altered by Vite/Rollup bundling.
+  // app.getAppPath() safely returns the project root (the `app` folder).
+  return path.join(app.getAppPath(), 'public/logo.png');
+}
+
 function ensureTray() {
   if (!tray) {
-    const icon = nativeImage.createFromPath(path.join(__dirname, '../../public/logo.png'));
+    const icon = nativeImage.createFromPath(getIconPath());
     tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
     tray.setToolTip('ClawExpress');
     tray.setContextMenu(Menu.buildFromTemplate([
@@ -93,7 +104,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200, height: 800, minWidth: 900, minHeight: 600,
     backgroundColor: '#030303',
-    icon: nativeImage.createFromPath(path.join(__dirname, '../../public/logo.png')),
+    icon: nativeImage.createFromPath(getIconPath()),
     frame: isWin ? false : true,
     titleBarStyle: isWin ? undefined : 'hidden',
     webPreferences: {
@@ -212,7 +223,31 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', () => { app.isQuitting = true; killAllPtys(); });
+app.on('before-quit', async (event) => {
+  app.isQuitting = true;
+  killAllPtys();
+
+  // Commit OpenFang container state before quitting (graceful shutdown)
+  const openfangEntry = runningProcesses.get('openfang');
+  if (openfangEntry) {
+    event.preventDefault();
+    const { execAsync: _exec } = require('util');
+    const exec = require('util').promisify(require('child_process').exec);
+    const containerName = 'openfang-clawexpress-skjz';
+    log.info('[Quit] OpenFang running — committing container state before exit...');
+    try {
+      // Try to find the real container name from spawn args
+      const spawnArgs = openfangEntry.process.spawnargs || [];
+      const nameArg = spawnArgs.find(a => a.startsWith('openfang-clawexpress'));
+      const cn = nameArg || containerName;
+      await exec(`docker commit ${cn} openfang-custom:latest`);
+      log.info('[Quit] OpenFang container state saved successfully.');
+    } catch (e) {
+      log.warn('[Quit] Could not commit OpenFang container state:', e.message);
+    }
+    app.quit();
+  }
+});
 
 app.on('window-all-closed', () => {
   runningProcesses.forEach(({ process: proc }) => {

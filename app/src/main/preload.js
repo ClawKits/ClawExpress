@@ -35,6 +35,7 @@ const VALID_CHANNELS = [
 
 const VALID_EVENTS = [
   'platform-log', 'platform-status-change', 'app-log', 'platform-ready', 'oauth-token-received', 'dependency-log',
+  'config-file-changed', // Added for raw config live reload
   // Updater events (broadcast from main process)
   'updater-event',
   // Channel login events
@@ -55,9 +56,13 @@ contextBridge.exposeInMainWorld('electron', {
       if (VALID_EVENTS.includes(channel)) {
         const wrapped = (event, ...args) => func(...args);
         ipcRenderer.on(channel, wrapped);
-        // Return cleanup function
         return () => ipcRenderer.removeListener(channel, wrapped);
       }
+    },
+    removeListener: (channel, func) => {
+      // Just a dummy to prevent the Uncaught TypeError. We actually rely on 
+      // the returned unsubscriber in modern components.
+      if (func === undefined) ipcRenderer.removeAllListeners(channel);
     }
   }
 });

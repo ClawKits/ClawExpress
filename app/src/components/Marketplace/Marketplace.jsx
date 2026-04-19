@@ -196,33 +196,6 @@ const Marketplace = ({ onNavigate }) => {
             {/* Upcoming Apps Section */}
             <div className={styles.sectionLabel}>Upcoming Platforms</div>
             <div className={styles.grid}>
-              {/* OpenFang */}
-              <div className={styles.card} style={{ opacity: 0.5, padding: 0, gap: 0, overflow: 'hidden' }}>
-                  <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <PlatformIcon id="openfang" size={40} />
-                  </div>
-                  <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
-                    <div className={styles.cardHeader}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <div>
-                          <div className={styles.cardName}>
-                            OpenFang
-                            <span className={styles.verifiedBadge} style={{ background: 'var(--border)', color: 'var(--text-muted)' }}>COMING SOON</span>
-                          </div>
-                          <div className={styles.cardVersion}>Enterprise RPA · by ClawKits</div>
-                        </div>
-                      </div>
-                    </div>
-                  <div className={styles.cardDesc}>A powerful Robotic Process Automation (RPA) engine powered by visual-language models.</div>
-                  <div className={styles.cardFooter}>
-                    <span className={styles.methodTag}>docker</span>
-                    <button className={styles.installBtn} disabled style={{ backgroundColor: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-                      Not Available
-                    </button>
-                  </div>
-                  </div>
-              </div>
-
               {/* ZeroClaw */}
               <div className={styles.card} style={{ opacity: 0.5, padding: 0, gap: 0, overflow: 'hidden' }}>
                   <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>

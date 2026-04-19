@@ -9,19 +9,33 @@ export default function RawConfigEditor({ platformId, onSaveAndRestart, isFullsc
   const [loading, setLoading] = useState(true);
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
   const editorRef = useRef(null);
 
   useEffect(() => {
     loadConfig();
     loadHistory();
-  }, [platformId]);
+
+    const handleConfigChange = ({ platformId: updatedPlatform, filename }) => {
+      if (updatedPlatform === platformId && !isDirty) {
+        toast.info(`External config change detected (${filename}), auto-reloading...`);
+        loadConfig();
+      }
+    };
+    
+    const unsubscribe = window.electron?.ipcRenderer.on('config-file-changed', handleConfigChange);
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [platformId, isDirty]);
 
   const loadConfig = async () => {
     try {
-      const res = await window.electron.ipcRenderer.invoke('read-raw-config');
+      const res = await window.electron.ipcRenderer.invoke('read-raw-config', { platformId });
       if (res.success) {
         setContent(res.text);
         setIsValid(true);
+        setIsDirty(false);
       } else {
         toast.error(`Failed to load config: ${res.reason}`);
       }
@@ -34,7 +48,7 @@ export default function RawConfigEditor({ platformId, onSaveAndRestart, isFullsc
 
   const loadHistory = async () => {
     try {
-      const res = await window.electron.ipcRenderer.invoke('get-config-history');
+      const res = await window.electron.ipcRenderer.invoke('get-config-history', { platformId });
       if (res.success) {
         setHistory(res.history);
       }
@@ -43,6 +57,7 @@ export default function RawConfigEditor({ platformId, onSaveAndRestart, isFullsc
 
   const handleEditorChange = (value) => {
     setContent(value);
+    setIsDirty(true);
     try {
       JSON.parse(value);
       setIsValid(true);
@@ -74,8 +89,9 @@ export default function RawConfigEditor({ platformId, onSaveAndRestart, isFullsc
     setTimeout(async () => {
       const formattedContent = editorRef.current.getValue() || content;
       try {
-        const res = await window.electron.ipcRenderer.invoke('write-raw-config', { rawJson: formattedContent });
+        const res = await window.electron.ipcRenderer.invoke('write-raw-config', { platformId, rawJson: formattedContent });
         if (res.success) {
+          setIsDirty(false);
           toast.success(shouldRestart ? 'Config saved & Restarting...' : 'Raw Config Saved successfully!');
           loadHistory(); // Reload history
           if (shouldRestart) {
@@ -93,10 +109,11 @@ export default function RawConfigEditor({ platformId, onSaveAndRestart, isFullsc
   const restoreHistory = async (filename) => {
     if (!window.confirm(`Are you sure you want to restore from ${filename}? Current changes will be overwritten.`)) return;
     try {
-      const res = await window.electron.ipcRenderer.invoke('restore-config-history', { filename });
+      const res = await window.electron.ipcRenderer.invoke('restore-config-history', { platformId, filename });
       if (res.success) {
         setContent(res.text);
         setIsValid(true);
+        setIsDirty(true);
         toast.success('History restored. Please review and click Save & Restart to apply.');
         setShowHistory(false);
       } else {

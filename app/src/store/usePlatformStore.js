@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { localPlatforms } from '../constants/localPlatforms';
 
 const REGISTRY_URL = 'https://clawexpress-registry.pages.dev';
 
@@ -82,15 +83,32 @@ export const usePlatformStore = create((set, get) => ({
       )
     }));
 
+    // Always resolve startScript from the fresh platform definition (localPlatforms),
+    // NOT from persisted data. Persisted startScript can be stale (wrong port,
+    // missing volume mounts, outdated image tags, etc.) since it was saved at
+    // install time and never updated when openfang.js changes.
+    // Only user-configured fields (port, env, cwd) are read from persisted state.
+    const freshDef = localPlatforms.find(
+      def => def.id === platform.registryId || def.id === id
+    );
+    const freshStartScript = freshDef?.startScript?.[platform.method]
+      ?? freshDef?.startScript
+      ?? platform.startScript?.[platform.method]
+      ?? platform.startScript
+      ?? [];
+
     const result = await window.electron?.ipcRenderer.invoke('platform-start', {
       platformId: id,
       config: {
-        method: platform.method,
-        version: platform.version,
-        container: platform.container,
-        startScript: platform.startScript,
-        cwd: platform.cwd,
-        env: platform.env || {},
+        method:      platform.method,
+        version:     platform.version,
+        container:   platform.container,
+        startScript: Array.isArray(freshStartScript) ? freshStartScript : [],
+        port:        platform.port,
+        cwd:         platform.cwd,
+        env:         platform.env || {},
+        registryId:  platform.registryId,
+        name:        platform.name,
       }
     });
 
@@ -237,11 +255,16 @@ export const usePlatformStore = create((set, get) => ({
   },
 
   // ─── React to real process exit events from main ─────────────────────────
-  handleStatusChange: ({ platformId, status }) => {
+  handleStatusChange: ({ platformId, status, version }) => {
     set(state => ({
-      platforms: state.platforms.map(p =>
-        p.id === platformId ? { ...p, status } : p
-      )
+      platforms: state.platforms.map(p => {
+        if (p.id === platformId) {
+          const updates = { status };
+          if (version) updates.version = version;
+          return { ...p, ...updates };
+        }
+        return p;
+      })
     }));
   },
 
@@ -251,7 +274,13 @@ export const usePlatformStore = create((set, get) => ({
     try {
       const res = await fetch(REGISTRY_URL);
       const data = await res.json();
-      set({ marketplace: data.platforms, marketplaceStatus: 'success' });
+      
+      const platforms = data.platforms || [];
+      
+      // Inject local platform overrides
+      localPlatforms.forEach(app => platforms.push(app));
+
+      set({ marketplace: platforms, marketplaceStatus: 'success' });
     } catch {
       set({ marketplaceStatus: 'error' });
     }

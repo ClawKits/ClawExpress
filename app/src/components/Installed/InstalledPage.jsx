@@ -168,11 +168,11 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
             return (
               <div key={platform.id} style={{ backgroundColor: 'var(--card-bg)', border: '1px solid', borderColor: isUpdating ? 'rgba(56, 189, 248, 0.4)' : 'var(--border)', borderRadius: '8px', overflow: 'hidden', transition: 'border-color 0.3s' }}>
                 <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {(platform.registryId || platform.id).includes('openclaw') ? (
-                    platform.method === 'docker' ? <DockerLogo size={64} />
-                    : platform.method === 'npm' ? <NpmLogo size={64} />
-                    : <img src="./openclaw-logo.png" alt="OpenClaw" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px', boxSizing: 'border-box' }} />
-                  ) : <Cpu size={40} color="var(--text-secondary)" />}
+                  {platform.method?.includes('docker') ? <DockerLogo size={64} />
+                    : platform.method?.includes('npm') ? <NpmLogo size={64} />
+                    : (platform.registryId || platform.id).includes('openclaw') 
+                      ? <img src="./openclaw-logo.png" alt="OpenClaw" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '16px', boxSizing: 'border-box' }} />
+                      : <Cpu size={40} color="var(--text-secondary)" />}
                 </div>
                 <div style={{ padding: '24px 20px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>

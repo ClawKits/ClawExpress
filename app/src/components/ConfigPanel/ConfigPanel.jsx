@@ -13,11 +13,17 @@ import UnlinkConfirmModal from './UnlinkConfirmModal';
 import StopConfirmModal from './StopConfirmModal';
 import GeneralTab from './GeneralTab';
 import ChatIntegrationsTab from './ChatIntegrationsTab';
+
+import OpenFangRawEditor from './OpenFangRawEditor';
 import UninstallModal from '../UninstallModal/UninstallModal';
+import { localPlatforms } from '../../constants/localPlatforms';
+import { openfang as openfangMeta } from '../../constants/localPlatforms/openfang';
+import Dropdown from '../Dropdown/Dropdown';
+import UpdateModal from './UpdateModal';
 import styles from './ConfigPanel.module.css';
 
 const DEFAULT_SCHEMA = {
-  features: ['ai_engine_setup', 'chat_integrations', 'custom_env'],
+  features: ['ai_engine_setup', 'chat_integrations', 'custom_env', 'raw_config'],
   fields: [
     { key: 'port', label: 'Port', type: 'number', placeholder: 'e.g. 3030' },
   ],
@@ -49,9 +55,15 @@ export const stripModelPrefix = (model) => {
 const ConfigPanel = ({ platform: platformProp, onClose }) => {
   // Subscribe to LIVE platform data from the store (the prop is a stale snapshot)
   const livePlatform = usePlatformStore(state => state.platforms.find(p => p.id === platformProp.id));
+  const marketplace = usePlatformStore(state => state.marketplace);
   const platform = livePlatform || platformProp;
 
-  const schema = platform.schema || DEFAULT_SCHEMA;
+  const isOpenfang = (platform.registryId || platform.id) === 'openfang';
+
+  const allRegistryItems = [...marketplace, ...Object.values(localPlatforms)];
+  const registryInfo = allRegistryItems.find(m => m.id === platform.registryId);
+  const schema = registryInfo?.schema || platform.schema || DEFAULT_SCHEMA;
+  
   const { updatePlatform, removePlatform, startPlatform, stopPlatform } = usePlatformStore();
   const { connections, loadConnections } = useConnectionStore();
 
@@ -84,6 +96,16 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
   const [channelSettingsMode, setChannelSettingsMode] = useState(null);
   const [connectedChannels, setConnectedChannels] = useState(new Set());
   const [channelLinkInfo, setChannelLinkInfo] = useState({});
+
+  // ── OpenFang: per-channel enable + token state ────────────────────────────
+  const initOpenfangChannelDraft = () => {
+    const d = {};
+    for (const id of Object.keys(openfangMeta.channels)) {
+      d[id] = { enabled: false, token: '' };
+    }
+    return d;
+  };
+  const [channelDraft, setChannelDraft] = useState(initOpenfangChannelDraft);
 
   const connectionHintEntry = draft.env.find(e => e.key === 'CLAWEXPRESS_CONNECTION_ID');
   const [selectedConnectionId, setSelectedConnectionId] = useState(connectionHintEntry?.value || '');
@@ -134,12 +156,24 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
 
   useEffect(() => {
     if (!platform.cwd) return;
-    window.electron?.ipcRenderer.invoke('read-platform-config', { cwd: platform.cwd })
+    window.electron?.ipcRenderer.invoke('read-platform-config', { cwd: platform.cwd, platformId: platform.registryId || platform.id })
       .then(result => {
         if (result?.env && Object.keys(result.env).length > 0) {
           setDraft(d => ({ ...d, env: Object.entries(result.env).map(([k, v]) => ({ key: k, value: v })) }));
           if (result.env['CLAWEXPRESS_CONNECTION_ID']) {
             setSelectedConnectionId(result.env['CLAWEXPRESS_CONNECTION_ID']);
+          }
+          // Populate OpenFang channel tokens from saved env
+          if (isOpenfang) {
+            setChannelDraft(prev => {
+              const next = { ...prev };
+              for (const [id, ch] of Object.entries(openfangMeta.channels)) {
+                if (result.env[ch.envKey]) {
+                  next[id] = { enabled: true, token: result.env[ch.envKey] };
+                }
+              }
+              return next;
+            });
           }
         }
         const newChatDraft = { SLACK_APP_TOKEN: result?.env?.['SLACK_APP_TOKEN'] || platform.env?.['SLACK_APP_TOKEN'] || '' };
@@ -289,6 +323,19 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
     }
     if (chatDraft.SLACK_APP_TOKEN?.trim()) envObj.SLACK_APP_TOKEN = chatDraft.SLACK_APP_TOKEN.trim();
 
+    // ── OpenFang: merge enabled channel tokens into envObj ────────────────
+    if (isOpenfang) {
+      for (const [id, ch] of Object.entries(openfangMeta.channels)) {
+        const entry = channelDraft[id];
+        if (entry?.enabled && entry.token?.trim()) {
+          envObj[ch.envKey] = entry.token.trim();
+        } else {
+          // Mark for removal if not enabled
+          delete envObj[ch.envKey];
+        }
+      }
+    }
+
     const methodChanged = draft.method && draft.method !== platform.method;
     const wasRunning = platform.status === 'RUNNING';
 
@@ -316,6 +363,7 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
     const envToRemove = ALL_REMOVABLE_KEYS.filter(k => !(k in envObj));
     if (draft.cwd) {
       await window.electron?.ipcRenderer.invoke('write-platform-config', {
+        platformId: platform.registryId || platform.id,
         cwd: draft.cwd,
         env: envObj,
         envToRemove,
@@ -396,6 +444,85 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
     }
   };
 
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [updateLogs, setUpdateLogs] = useState([]);
+  const [updateSuccess, setUpdateSuccess] = useState(false);
+
+  useEffect(() => {
+    if (!platform || !showUpdateModal) return;
+    const cleanup = window.electron?.ipcRenderer.on('platform-log', ({ platformId, msg }) => {
+      if (platformId === `install-${platform.id}`) {
+        setUpdateLogs(prev => {
+          const next = [...prev, msg];
+          return next.length > 200 ? next.slice(next.length - 200) : next;
+        });
+      }
+    });
+    return cleanup;
+  }, [platform, showUpdateModal]);
+
+  const handleUpdate = async () => {
+    const marketplace = usePlatformStore.getState().marketplace;
+    let registryPlatform = marketplace.find(p => p.id === platform.registryId);
+    if (!registryPlatform) {
+       registryPlatform = localPlatforms.find(p => p.id === platform.registryId || p.id === platform.id || (platform.name && platform.name.toLowerCase() === p.name.toLowerCase()));
+    }
+
+    if (!registryPlatform) {
+       toast.error("Original platform metadata not found in registry.");
+       return;
+    }
+    
+    const installScript = registryPlatform.installScript?.[platform.method];
+    if (!installScript) {
+       toast.error("No update script available for this method.");
+       return;
+    }
+
+    setIsUpdating(true);
+    setShowUpdateModal(true);
+    setUpdateSuccess(false);
+
+    setUpdateLogs(prev => [...prev, '[SYSTEM] Stopping platform before starting update operation...']);
+    // Always stop the platform to release locks and ensure a clean update state
+    await stopPlatform(platform.id);
+    await new Promise(r => setTimeout(r, 1500)); // wait for file handles to drop
+
+
+    setUpdateLogs(prev => [...prev, '[SYSTEM] Initializing update sequence...']);
+
+    try {
+      const result = await window.electron.ipcRenderer.invoke('platform-install', {
+        platformId: platform.id,
+        method: platform.method,
+        config: undefined,
+        configMapping: registryPlatform.configMapping,
+        installScript: installScript
+      });
+
+      if (result.success) {
+        toast.success(`Successfully updated ${platform.name}!`);
+        setUpdateSuccess(true);
+        
+        // Auto start after build successfully finished
+        setTimeout(async () => {
+          const tId = toast.loading(`Starting updated ${platform.name} container...`);
+          await startPlatform(platform.id);
+          toast.success(`${platform.name} started!`, { id: tId });
+        }, 800);
+      } else {
+        toast.error(`Update failed: ${result.reason}`);
+        setUpdateSuccess(false);
+      }
+    } catch(e) {
+      toast.error(`Update failed: ${e.message}`);
+      setUpdateSuccess(false);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
   const otherEnv = draft.env.filter(e =>
     !INTERNAL_KEYS.includes(e.key) &&
     !CHAT_KEYS.includes(e.key) &&
@@ -404,6 +531,14 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
 
   return (
     <>
+      <UpdateModal 
+        isOpen={showUpdateModal} 
+        onClose={() => { setShowUpdateModal(false); if (updateSuccess) { /* Optionally refresh config here if needed */ } }} 
+        platform={platform} 
+        logs={updateLogs} 
+        updating={isUpdating} 
+        success={updateSuccess} 
+      />
       <div className={styles.overlay} onClick={onClose} />
       <div
         className={styles.drawer}
@@ -433,12 +568,14 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
               <MessageSquare size={13} /> Chat Integrations
             </button>
           )}
-          <button
-            className={`${styles.tabBtn} ${activeTab === 'raw' ? styles.tabBtnActive : ''}`}
-            onClick={() => setActiveTab('raw')}
-          >
-            <Code size={13} /> Advanced JSON
-          </button>
+          {schema.features.includes('raw_config') && (
+            <button
+              className={`${styles.tabBtn} ${activeTab === 'raw' ? styles.tabBtnActive : ''}`}
+              onClick={() => setActiveTab('raw')}
+            >
+              <Code size={13} /> Advanced JSON
+            </button>
+          )}
         </div>
 
         <div className={styles.body}>
@@ -473,41 +610,52 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
               platform={platform}
               handleDelete={handleDelete}
               onClose={onClose}
+              isUpdating={isUpdating}
+              handleUpdate={handleUpdate}
             />
           )}
 
           {activeTab === 'chat' && schema.features.includes('chat_integrations') && (
-            <ChatIntegrationsTab
-              connectedChannels={connectedChannels}
-              channelLinkInfo={channelLinkInfo}
-              checkingStatus={checkingStatus}
-              platform={platform}
-              channelSettingsMode={channelSettingsMode}
-              setChannelSettingsMode={setChannelSettingsMode}
-              waConfig={waConfig}
-              setWaConfig={setWaConfig}
-              zaloConfig={zaloConfig}
-              setZaloConfig={setZaloConfig}
-              pairingCodes={pairingCodes}
-              setPairingCodes={setPairingCodes}
-              isUnlinking={isUnlinking}
-              setUnlinkConfirm={setUnlinkConfirm}
-              setStopGatewayConfirm={setStopGatewayConfirm}
-              setQrModal={setQrModal}
-              chatDraft={chatDraft}
-              setChatDraft={setChatDraft}
-              stopPlatform={stopPlatform}
-              startPlatform={startPlatform}
-            />
+              <ChatIntegrationsTab
+                connectedChannels={connectedChannels}
+                channelLinkInfo={channelLinkInfo}
+                checkingStatus={checkingStatus}
+                platform={platform}
+                channelSettingsMode={channelSettingsMode}
+                setChannelSettingsMode={setChannelSettingsMode}
+                waConfig={waConfig}
+                setWaConfig={setWaConfig}
+                zaloConfig={zaloConfig}
+                setZaloConfig={setZaloConfig}
+                pairingCodes={pairingCodes}
+                setPairingCodes={setPairingCodes}
+                isUnlinking={isUnlinking}
+                setUnlinkConfirm={setUnlinkConfirm}
+                setStopGatewayConfirm={setStopGatewayConfirm}
+                setQrModal={setQrModal}
+                chatDraft={chatDraft}
+                setChatDraft={setChatDraft}
+                stopPlatform={stopPlatform}
+                startPlatform={startPlatform}
+              />
           )}
 
           {activeTab === 'raw' && (
-            <RawConfigEditor
-              platformId={platform.id}
-              onSaveAndRestart={handleRestartNow}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
-            />
+            isOpenfang ? (
+              <OpenFangRawEditor
+                platform={platform}
+                onSaveAndRestart={handleRestartNow}
+                isFullscreen={isFullscreen}
+                onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
+              />
+            ) : (
+              <RawConfigEditor
+                platformId={platform.id}
+                onSaveAndRestart={handleRestartNow}
+                isFullscreen={isFullscreen}
+                onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
+              />
+            )
           )}
         </div>
 

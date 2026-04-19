@@ -7,10 +7,10 @@ import { PROVIDERS } from '../../constants/providers';
 import CHANNEL_REGISTRY from '../../constants/channelRegistry';
 import Topbar from '../Topbar/Topbar';
 
-// Token channels keyed by envKey for O(1) lookup
-const TOKEN_CHANNEL_MAP = Object.values(CHANNEL_REGISTRY)
-  .filter(ch => ch.authType === 'token')
-  .reduce((acc, ch) => { acc[ch.envKey] = ch; return acc; }, {});
+// Token channels keyed by envKey for O(1) lookup, with id preserved
+const TOKEN_CHANNEL_MAP = Object.entries(CHANNEL_REGISTRY)
+  .filter(([_, ch]) => ch.authType === 'token')
+  .reduce((acc, [id, ch]) => { acc[ch.envKey] = { ...ch, id }; return acc; }, {});
 
 // QR channels keyed by channel id (whatsapp, zalouser, ...)
 const QR_CHANNEL_MAP = Object.entries(CHANNEL_REGISTRY)
@@ -52,15 +52,27 @@ const PlatformCard = ({ platform, linkedQrChannels, onStart, onStop }) => {
   const uptime = formatUptime(platform.uptime);
   const isTransitioning = platform.status === 'STARTING' || platform.status === 'STOPPING';
 
-  // Token channels: detected from env vars
+  // Token channels: only show if platform's channels config EXPLICITLY has enabled: true
+  // This prevents token env vars (shared from Connection Hub) from showing badges on wrong platforms
+  const channelConfig = platform.channels || {};
   const tokenChannels = Object.entries(platform.env || {})
-    .filter(([k, v]) => TOKEN_CHANNEL_MAP[k] && v?.trim())
+    .filter(([k, v]) => {
+      if (!TOKEN_CHANNEL_MAP[k] || !v?.trim()) return false;
+      const chId = TOKEN_CHANNEL_MAP[k].id;
+      const chCfg = channelConfig[chId];
+      // Must be explicitly enabled in THIS platform's channels config
+      return chCfg?.enabled === true;
+    })
     .map(([k]) => ({ key: k, ...TOKEN_CHANNEL_MAP[k] }));
 
-  // QR channels: detected from filesystem sessions (passed from parent)
-  const qrChannels = [...linkedQrChannels]
-    .filter(id => QR_CHANNEL_MAP[id])
-    .map(id => ({ key: id, ...QR_CHANNEL_MAP[id] }));
+  // QR channels (WhatsApp, Zalo): session files belong to OpenClaw only.
+  // Never show on other platforms to prevent cross-platform badge bleed.
+  const platformId = platform.registryId || platform.id;
+  const qrChannels = platformId === 'openclaw'
+    ? [...linkedQrChannels]
+        .filter(id => QR_CHANNEL_MAP[id])
+        .map(id => ({ key: id, ...QR_CHANNEL_MAP[id] }))
+    : [];
 
   const channels = [...tokenChannels, ...qrChannels];
 
@@ -105,7 +117,7 @@ const PlatformCard = ({ platform, linkedQrChannels, onStart, onStop }) => {
             marginTop: '6px', paddingLeft: '16px',
           }}>
             {platform.port    && <span>Port {platform.port}</span>}
-            {platform.version && <span>v{platform.version}</span>}
+            {platform.version && <span>v{String(platform.version).replace(/^v+/i, '')}</span>}
             {platform.method  && <span>{platform.method}</span>}
             {uptime           && <span style={{ color: '#22c55e' }}>{uptime}</span>}
           </div>
@@ -275,8 +287,25 @@ const Dashboard = ({ onNavigate }) => {
   const { connections, loadConnections } = useConnectionStore();
   const requireAuth = useRequireAuth();
   const [linkedQrChannels, setLinkedQrChannels] = useState(new Set());
+  // Map of platformId -> channels config object (e.g. { telegram: { enabled: false } })
+  const [platformChannels, setPlatformChannels] = useState({});
 
   useEffect(() => { loadConnections(); }, []);
+
+  // Load channels config from disk for all installed platforms
+  useEffect(() => {
+    platforms.forEach(async (p) => {
+      try {
+        const result = await window.electron?.ipcRenderer.invoke('read-platform-config', {
+          cwd: p.cwd,
+          platformId: p.registryId || p.id,
+        });
+        if (result?.channels) {
+          setPlatformChannels(prev => ({ ...prev, [p.id]: result.channels }));
+        }
+      } catch (_) {}
+    });
+  }, [platforms.length]);
 
   // Check QR-based channels (WhatsApp, Zalo Personal) via filesystem sessions
   useEffect(() => {
@@ -357,7 +386,7 @@ const Dashboard = ({ onNavigate }) => {
                 {platforms.map(p => (
                   <PlatformCard
                     key={p.id}
-                    platform={p}
+                    platform={{ ...p, channels: platformChannels[p.id] || p.channels || {} }}
                     linkedQrChannels={linkedQrChannels}
                     onStart={requireAuth(() => startPlatform(p.id))}
                     onStop={requireAuth(() => stopPlatform(p.id))}

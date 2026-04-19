@@ -17,6 +17,7 @@ const fs   = require('fs');
 const path = require('path');
 const log  = require('./logger');
 const { handleTestChat } = require('./chatTester');
+const { getAdapter } = require('./platformRegistry');
 
 // ── Channel token map (which env key maps to which channel) ──────────────────
 const CHANNEL_TOKENS = [
@@ -64,246 +65,77 @@ function buildProviderConfig(key) {
   };
 }
 
+const activeWatchers = new Set();
+
+function startWatching(platformId, cwd) {
+  if (!cwd || !fs.existsSync(cwd) || activeWatchers.has(cwd)) return;
+  try {
+    activeWatchers.add(cwd);
+    let debounceTimer = null;
+    fs.watch(cwd, (eventType, filename) => {
+      if (!filename || (!filename.endsWith('.json') && !filename.endsWith('.toml'))) return;
+      
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        const { BrowserWindow } = require('electron');
+        BrowserWindow.getAllWindows().forEach(win => {
+           if (!win.isDestroyed()) {
+             win.webContents.send('config-file-changed', { platformId, filename, eventType });
+             log.info(`[Config Watcher] Dispatched update for ${platformId} (${filename})`);
+           }
+        });
+      }, 500);
+    });
+    log.info(`[Config Watcher] Started watching ${cwd} for ${platformId}`);
+  } catch (error) {
+    log.error(`[Config Watcher] Error watching ${cwd}:`, error.message);
+    activeWatchers.delete(cwd);
+  }
+}
+
 function registerConfigHandlers() {
   // ── read-platform-config ──────────────────────────────────────────────────
-  ipcMain.handle('read-platform-config', (event, { cwd }) => {
-    // Single source of truth: ~/.openclaw/openclaw.json
-    const configPath = path.join(require('os').homedir(), '.openclaw', 'openclaw.json');
-    try {
-      if (fs.existsSync(configPath)) {
-        const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        const modelPrimary = cfg.agents?.defaults?.model;
-        return {
-          success: true,
-          env: cfg.env || {},
-          model: typeof modelPrimary === 'string' ? modelPrimary : (modelPrimary?.primary || null),
-          channels: cfg.channels || {}
-        };
-      }
-      return { success: false, reason: 'Config file not found' };
-    } catch (err) {
-      return { success: false, reason: err.message };
-    }
+  ipcMain.handle('read-platform-config', (event, { cwd, platformId }) => {
+    if (platformId === 'openfang') cwd = path.join(require('os').homedir(), '.openfang');
+    startWatching(platformId, cwd);
+    const adapter = getAdapter(platformId);
+    return adapter.readConfig({ cwd, platformId });
   });
 
   // ── write-platform-config ─────────────────────────────────────────────────
-  ipcMain.handle('write-platform-config', (event, { cwd, env, envToRemove, model, model_display, customProxyTarget, channelConfig }) => {
-    // Single source of truth: ~/.openclaw/openclaw.json
-    const os = require('os');
-    const openclawDir = path.join(os.homedir(), '.openclaw');
-    if (!fs.existsSync(openclawDir)) fs.mkdirSync(openclawDir, { recursive: true });
-    const configPath = path.join(openclawDir, 'openclaw.json');
-    try {
-      let existing = {};
-      if (fs.existsSync(configPath)) {
-        existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      }
-
-      existing.env = { ...(existing.env || {}), ...env };
-
-      if (envToRemove && Array.isArray(envToRemove)) {
-        envToRemove.forEach(k => delete existing.env[k]);
-      }
-
-      existing.channels = existing.channels || {};
-
-      for (const { tokenKey, channel } of CHANNEL_TOKENS) {
-        if (env[tokenKey]) {
-          existing.channels[channel] = {
-            ...(existing.channels[channel] || {}),
-            enabled: true,
-            dmPolicy: 'open',
-            allowFrom: ['*'],
-          };
-        } else if (envToRemove && envToRemove.includes(tokenKey)) {
-          if (existing.channels[channel]) existing.channels[channel].enabled = false;
-        }
-      }
-
-      // Explicit channel config (e.g. WhatsApp/Zalo policies) from UI
-      if (channelConfig) {
-        Object.keys(channelConfig).forEach(ch => {
-          existing.channels[ch] = {
-            ...(existing.channels[ch] || {}),
-            ...channelConfig[ch]
-          };
-          // Also ensure the channel is enabled when policy is set
-          if (!existing.channels[ch].enabled) {
-            existing.channels[ch].enabled = true;
-          }
-        });
-      }
-
-      // ── (Removed dangerous automatic plugins.entries injection here) ──────────────
-
-      // ── Ensure gateway.mode is set to avoid silent drops ──────────────
-      if (!existing.gateway) existing.gateway = {};
-      if (!existing.gateway.mode) existing.gateway.mode = 'local';
-
-      if (customProxyTarget) {
-        const baseUrl = env['OPENAI_BASE_URL'];
-        const apiKey  = env['OPENAI_API_KEY'];
-        existing.models = existing.models || {};
-        existing.models.providers = existing.models.providers || {};
-        existing.models.providers.litellm = {
-          baseUrl: baseUrl || '',
-          apiKey:  apiKey ? '${OPENAI_API_KEY}' : '',
-          api: 'openai-completions',
-          models: [{ id: customProxyTarget, name: 'Custom Model', input: ['text'], contextWindow: 128000, maxTokens: 8192 }],
-        };
-        existing.agents = existing.agents || {};
-        existing.agents.defaults = existing.agents.defaults || {};
-        existing.agents.defaults.model = `litellm/${customProxyTarget}`;
-      } else if (model) {
-        // Only remove litellm proxy if it was explicitly created by ClawExpress
-        // (identified by the 'Custom Model' marker). Preserve other providers that
-        // OpenClaw's gateway runtime may have added — removing them triggers the
-        // gateway's config size-drop (clobber) protection and blocks startup.
-        if (existing.models?.providers?.litellm) {
-          const litellmModels = existing.models.providers.litellm.models;
-          const isClawExpressProxy = Array.isArray(litellmModels) &&
-            litellmModels.some(m => m.name === 'Custom Model');
-          if (isClawExpressProxy) {
-            delete existing.models.providers.litellm;
-          }
-        }
-        existing.agents = existing.agents || {};
-        existing.agents.defaults = existing.agents.defaults || {};
-        
-        let finalModelString = model;
-        // Dynamically auto-prepend Litellm Provider Prefix mapped from env if missing
-        if (env['NVIDIA_API_KEY'] && !finalModelString.startsWith('nvidia_nim/')) {
-          finalModelString = `nvidia_nim/${model}`;
-        } else if (env['GROQ_API_KEY'] && !finalModelString.startsWith('groq/')) {
-          finalModelString = `groq/${model}`;
-        } else if (env['XAI_API_KEY'] && !finalModelString.startsWith('xai/')) {
-          finalModelString = `xai/${model}`;
-        } else if (env['OPENROUTER_API_KEY'] && !finalModelString.startsWith('openrouter/')) {
-          finalModelString = `openrouter/${model}`;
-        } else if (env['ANTHROPIC_API_KEY'] && !finalModelString.startsWith('anthropic/')) {
-          finalModelString = `anthropic/${model}`;
-        } else if (env['GEMINI_API_KEY'] && !finalModelString.startsWith('gemini/')) {
-          finalModelString = `gemini/${model}`;
-        } else if (env['DEEPSEEK_API_KEY']) {
-          const modelId = model.replace('deepseek/', '');
-          existing.models = existing.models || {};
-          existing.models.providers = existing.models.providers || {};
-          existing.models.providers.litellm = {
-            baseUrl: 'https://api.deepseek.com',
-            apiKey: '${DEEPSEEK_API_KEY}',
-            api: 'openai-completions',
-            models: [{ id: modelId, name: 'DeepSeek Model', input: ['text'], contextWindow: 128000, maxTokens: 8192 }]
-          };
-          finalModelString = `litellm/${modelId}`;
-        } else if (env['TOGETHER_API_KEY'] && !finalModelString.startsWith('together_ai/')) {
-          finalModelString = `together_ai/${model}`;
-        } else if (env['MOONSHOT_API_KEY'] && !finalModelString.startsWith('moonshot/')) {
-          finalModelString = `moonshot/${model}`;
-        } else if (env['MISTRAL_API_KEY'] && !finalModelString.startsWith('mistral/')) {
-          finalModelString = `mistral/${model}`;
-        } else if (env['CLAWEXPRESS_PROVIDER'] === 'codex' && !finalModelString.includes('/')) {
-          finalModelString = `openai-codex/${model}`;
-        } else if (env['OPENAI_API_KEY'] && !finalModelString.startsWith('openai/') && !finalModelString.startsWith('openai-codex/') && !customProxyTarget) {
-          finalModelString = `openai/${model}`;
-        }
-        existing.agents.defaults.model = finalModelString;
-      }
-
-      if (cwd && existing.agents?.defaults?.model) {
-        fs.writeFileSync(path.join(cwd, '.chosen-model'), existing.agents.defaults.model, 'utf8');
-      }
-
-      fs.writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf8');
-      log.info('[Config] Written to', configPath, '| model:', model || '(unchanged)', customProxyTarget ? `(Native Proxy: ${customProxyTarget})` : '');
-      return { success: true };
-    } catch (err) {
-      log.error('[Config] write-platform-config failed:', err.message);
-      return { success: false, reason: err.message };
-    }
+  ipcMain.handle('write-platform-config', (event, args) => {
+    const adapter = getAdapter(args.platformId);
+    return adapter.writeConfig(args);
   });
 
   // ── Raw Config & History Handlers ──────────────────────────────────────────
-  ipcMain.handle('read-raw-config', () => {
-    const configPath = path.join(require('os').homedir(), '.openclaw', 'openclaw.json');
-    try {
-      if (fs.existsSync(configPath)) {
-        return { success: true, text: fs.readFileSync(configPath, 'utf8') };
-      }
-      return { success: false, reason: 'Config file not found' };
-    } catch (err) {
-      return { success: false, reason: err.message };
-    }
-  });
-
-  ipcMain.handle('write-raw-config', (event, { rawJson }) => {
-    const os = require('os');
-    const openclawDir = path.join(os.homedir(), '.openclaw');
-    const historyDir = path.join(openclawDir, 'history');
-    const configPath = path.join(openclawDir, 'openclaw.json');
+  ipcMain.handle('read-raw-config', (event, args = {}) => {
+    const platformId = args.platformId || 'openclaw';
+    const cwd = platformId === 'openfang' ? path.join(require('os').homedir(), '.openfang') : args.cwd;
+    startWatching(platformId, cwd);
     
-    try {
-      // 1. Validate JSON
-      JSON.parse(rawJson);
-      
-      // 2. Make a backup of current if exists
-      if (fs.existsSync(configPath)) {
-        if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true });
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        const backupPath = path.join(historyDir, `openclaw.json.rev-${ts}`);
-        fs.copyFileSync(configPath, backupPath);
-        
-        // 3. Keep only last 15 backups to save space
-        const backups = fs.readdirSync(historyDir)
-          .filter(f => f.startsWith('openclaw.json.rev-'))
-          .sort()
-          .reverse();
-        if (backups.length > 15) {
-          backups.slice(15).forEach(f => {
-            try { fs.unlinkSync(path.join(historyDir, f)); } catch (_) {}
-          });
-        }
-      }
-      
-      // 4. Write new raw config
-      fs.writeFileSync(configPath, rawJson, 'utf8');
-      log.info('[Config] Raw JSON config written & backed up successfully');
-      return { success: true };
-    } catch (err) {
-      log.error('[Config] write-raw-config failed:', err.message);
-      return { success: false, reason: 'Invalid JSON: ' + err.message };
-    }
+    const adapter = getAdapter(platformId);
+    return adapter.readRawConfig();
   });
 
-  ipcMain.handle('get-config-history', () => {
-    const historyDir = path.join(require('os').homedir(), '.openclaw', 'history');
-    try {
-      if (!fs.existsSync(historyDir)) return { success: true, history: [] };
-      const files = fs.readdirSync(historyDir)
-        .filter(f => f.startsWith('openclaw.json.rev-'))
-        .sort()
-        .reverse()
-        .map(f => {
-          const m = f.match(/rev-(.*)$/);
-          const dateStr = m ? m[1].replace(/-/g, ':') : f; // Basic recovery
-          return { filename: f, dateStr: dateStr };
-        });
-      return { success: true, history: files };
-    } catch (err) {
-      return { success: false, reason: err.message };
-    }
+  ipcMain.handle('write-raw-config', (event, args) => {
+    const adapter = getAdapter(args.platformId || 'openclaw');
+    return adapter.writeRawConfig(args);
   });
 
-  ipcMain.handle('restore-config-history', (event, { filename }) => {
-    const historyDir = path.join(require('os').homedir(), '.openclaw', 'history');
-    const target = path.join(historyDir, filename);
-    try {
-      if (!fs.existsSync(target)) throw new Error('Backup file not found');
-      const text = fs.readFileSync(target, 'utf8');
-      return { success: true, text };
-    } catch (err) {
-      return { success: false, reason: err.message };
-    }
+  ipcMain.handle('get-config-history', (event, args = {}) => {
+    const adapter = getAdapter(args.platformId || 'openclaw');
+    if (adapter.getRawConfigHistory) return adapter.getRawConfigHistory();
+    return { success: true, history: [] }; // fallback
   });
+
+  ipcMain.handle('restore-config-history', (event, args) => {
+    const adapter = getAdapter(args.platformId || 'openclaw');
+    if (adapter.restoreRawConfig) return adapter.restoreRawConfig(args);
+    return { success: false, reason: 'unsupported' };
+  });
+
+
 
   // ── test-model-chat ────────────────────────────────────────────────────────
   ipcMain.removeHandler('test-model-chat');
@@ -571,6 +403,79 @@ function registerConfigHandlers() {
     const file = path.join(app.getPath('userData'), 'connections.json');
     fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
     return { success: true };
+  });
+
+
+  // ── OpenFang TOML config handlers ─────────────────────────────────────────
+  const OPENFANG_DIR    = () => path.join(require('os').homedir(), '.openfang');
+  const OPENFANG_TOML   = () => path.join(OPENFANG_DIR(), 'config.toml');
+  const OPENFANG_HIST   = () => path.join(OPENFANG_DIR(), 'history');
+
+  ipcMain.removeHandler('read-raw-openfang-config');
+  ipcMain.handle('read-raw-openfang-config', () => {
+    const tomlPath = OPENFANG_TOML();
+    try {
+      if (fs.existsSync(tomlPath)) {
+        return { success: true, text: fs.readFileSync(tomlPath, 'utf8') };
+      }
+      return { success: false, reason: 'config.toml not found — start OpenFang once to generate it.' };
+    } catch (err) {
+      return { success: false, reason: err.message };
+    }
+  });
+
+  ipcMain.removeHandler('write-raw-openfang-config');
+  ipcMain.handle('write-raw-openfang-config', (event, { rawToml }) => {
+    const tomlPath = OPENFANG_TOML();
+    const histDir  = OPENFANG_HIST();
+    try {
+      // Backup current file
+      if (fs.existsSync(tomlPath)) {
+        if (!fs.existsSync(histDir)) fs.mkdirSync(histDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        fs.copyFileSync(tomlPath, path.join(histDir, `config.toml.rev-${ts}`));
+        // Keep only last 15 backups
+        const backups = fs.readdirSync(histDir).filter(f => f.startsWith('config.toml.rev-')).sort().reverse();
+        if (backups.length > 15) backups.slice(15).forEach(f => { try { fs.unlinkSync(path.join(histDir, f)); } catch (_) {} });
+      }
+      const dir = OPENFANG_DIR();
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(tomlPath, rawToml, 'utf8');
+      log.info('[Config] Written ~/.openfang/config.toml');
+      return { success: true };
+    } catch (err) {
+      log.error('[Config] write-raw-openfang-config failed:', err.message);
+      return { success: false, reason: err.message };
+    }
+  });
+
+  ipcMain.removeHandler('get-openfang-config-history');
+  ipcMain.handle('get-openfang-config-history', () => {
+    const histDir = OPENFANG_HIST();
+    try {
+      if (!fs.existsSync(histDir)) return { success: true, history: [] };
+      const files = fs.readdirSync(histDir)
+        .filter(f => f.startsWith('config.toml.rev-'))
+        .sort().reverse()
+        .map(f => {
+          const m = f.match(/rev-(.*)$/);
+          return { filename: f, dateStr: m ? m[1].replace(/-/g, ':') : f };
+        });
+      return { success: true, history: files };
+    } catch (err) {
+      return { success: false, reason: err.message };
+    }
+  });
+
+  ipcMain.removeHandler('restore-openfang-config-history');
+  ipcMain.handle('restore-openfang-config-history', (event, { filename }) => {
+    const target = path.join(OPENFANG_HIST(), filename);
+    try {
+      if (!fs.existsSync(target)) throw new Error('Backup not found');
+      return { success: true, text: fs.readFileSync(target, 'utf8') };
+    } catch (err) {
+      return { success: false, reason: err.message };
+    }
   });
 
   log.info('[configHandler] IPC handlers registered.');

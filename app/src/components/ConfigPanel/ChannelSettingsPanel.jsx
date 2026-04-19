@@ -16,7 +16,7 @@ const ChannelSettingsPanel = ({
   onClose,
 }) => {
   const handleSave = async () => {
-    const res = await window.electron.ipcRenderer.invoke('read-platform-config', { cwd: platform.cwd });
+    const res = await window.electron.ipcRenderer.invoke('read-platform-config', { cwd: platform.cwd, platformId: platform.registryId || platform.id });
     if (!res.success) return;
 
     const newChannels = res.channels || {};
@@ -34,6 +34,7 @@ const ChannelSettingsPanel = ({
         : parsedAllowFrom;
 
     await window.electron.ipcRenderer.invoke('write-platform-config', {
+      platformId: platform.registryId || platform.id,
       cwd: platform.cwd,
       env: {},
       channelConfig: { [ch.id]: newChannels[ch.id] },
