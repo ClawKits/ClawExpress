@@ -296,7 +296,8 @@ const OpenClawAdapter = {
     const { execSync } = require('child_process');
     
     if (platformConfig?.method === 'docker') {
-      try { execSync('docker info', { stdio: 'ignore' }); } catch (err) { return { success: false, reason: 'Docker is not running.' }; }
+      const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+      try { execSync(`${runnerCmd} info`, { stdio: 'ignore' }); } catch (err) { return { success: false, reason: 'Container runtime is not running.' }; }
     } else {
       try { const shellOpt = isWin ? 'cmd.exe' : '/bin/bash'; execSync('openclaw --version', { shell: shellOpt, stdio: 'ignore' }); } catch (err) { return { success: false, reason: 'openclaw CLI is missing.' }; }
     }
@@ -409,7 +410,8 @@ const OpenClawAdapter = {
           if (done) { clearInterval(pollInterval); return; }
           if (platformConfig?.method === 'docker' && containerName) {
             try {
-              require('child_process').execSync(`docker exec ${containerName} sh -c "mkdir -p /home/node/.openclaw/tmp && find /tmp -name '${qrFileName}' -exec cp {} /home/node/.openclaw/tmp/${qrFileName} \\;"`, { stdio: 'ignore' });
+              const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+              require('child_process').execSync(`${runnerCmd} exec ${containerName} sh -c "mkdir -p /home/node/.openclaw/tmp && find /tmp -name '${qrFileName}' -exec cp {} /home/node/.openclaw/tmp/${qrFileName} \\;"`, { stdio: 'ignore' });
             } catch (e) {}
           }
           const qr = tryReadQrFile(channel, 5 * 60 * 1000);

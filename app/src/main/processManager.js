@@ -70,11 +70,13 @@ async function spawnPlatform(platformId, config, webContents) {
 
     // ── Precondition checks ───────────────────────────────────────────────────
     const { execSync } = require('child_process');
+    const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+
     if (config.method === 'docker') {
       try {
-        execSync('docker info', { stdio: 'ignore' });
+        execSync(`${runnerCmd} info`, { stdio: 'ignore' });
       } catch {
-        sendLog('[SYSTEM] ERROR: Docker is not running or not installed! Please start Docker first.');
+        sendLog(`[SYSTEM] ERROR: ${runnerCmd} is not running or not installed! Please start Docker/Podman first.`);
         return { success: false, reason: 'DOCKER_NOT_RUNNING' };
       }
     } else if (useOC) {
@@ -99,14 +101,14 @@ async function spawnPlatform(platformId, config, webContents) {
     // ── Per-method script preparation ─────────────────────────────────────────
     if (config.method === 'docker') {
       if (platformId === 'openfang' || config.registryId === 'openfang') {
-        const exists = require('child_process').spawnSync('docker', ['ps', '-a', '-q', '-f', `name=^/${containerName}$`]).stdout.toString().trim();
+        const exists = require('child_process').spawnSync(runnerCmd, ['ps', '-a', '-q', '-f', `name=^/${containerName}$`]).stdout.toString().trim();
         if (exists) {
           sendLog('[SYSTEM] Saving OpenFang container state (dependencies/hands)...');
-          require('child_process').spawnSync('docker', ['commit', containerName, 'openfang-custom:latest']);
+          require('child_process').spawnSync(runnerCmd, ['commit', containerName, 'openfang-custom:latest']);
         }
       }
       sendLog('[SYSTEM] Running zombie cleanup...');
-      require('child_process').spawnSync('docker', ['rm', '-f', containerName]);
+      require('child_process').spawnSync(runnerCmd, ['rm', '-f', containerName]);
 
       if (useOC) {
         // Also free the gateway port on the HOST so OpenClaw always binds to
@@ -136,8 +138,13 @@ async function spawnPlatform(platformId, config, webContents) {
       if (scriptArr.length === 0) scriptArr = ['npm', 'start'];
     }
 
-    // ── Windows .cmd suffix ───────────────────────────────────────────────────
+    // ── Map docker to podman/orbstack if detected & apply Win .cmd suffix ───────
     let cmd = scriptArr[0];
+    if (cmd === 'docker' && global.CONTAINER_RUNTIME && global.CONTAINER_RUNTIME !== 'docker') {
+      scriptArr[0] = global.CONTAINER_RUNTIME;
+      cmd = global.CONTAINER_RUNTIME;
+    }
+
     if (isWin && (cmd === 'npm' || cmd === 'npx' || cmd === 'openclaw')) {
       cmd += '.cmd';
     }
@@ -287,10 +294,12 @@ async function stopPlatform(platformId, webContents, method, container) {
 
       // ── Commit + rm in background (non-blocking) ───────────────────────────
       (async () => {
+        const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+
         if (isOpenfang) {
           // Only commit if something was installed since last commit (flag file)
           const flagCheck = require('child_process').spawnSync(
-            'docker', ['exec', containerName, 'test', '-f', '/tmp/.needs-commit'],
+            runnerCmd, ['exec', containerName, 'test', '-f', '/tmp/.needs-commit'],
             { timeout: 3000 }
           );
           const needsCommit = flagCheck.status === 0;
@@ -298,7 +307,7 @@ async function stopPlatform(platformId, webContents, method, container) {
           if (needsCommit) {
             sendLog(`[SYSTEM] Changes detected — saving container state...`);
             try {
-              await execAsync(`docker commit ${containerName} openfang-custom:latest`, { timeout: 120000 });
+              await execAsync(`${runnerCmd} commit ${containerName} openfang-custom:latest`, { timeout: 120000 });
               sendLog(`[SYSTEM] Container state saved.`);
             } catch (e) {
               sendLog(`[WARN] Commit failed (state may not be saved): ${e.message}`);
@@ -309,7 +318,7 @@ async function stopPlatform(platformId, webContents, method, container) {
         }
 
         sendLog(`[SYSTEM] Destroying container ${containerName}...`);
-        require('child_process').spawn('docker', ['rm', '-f', containerName], { detached: true, stdio: 'ignore' });
+        require('child_process').spawn(runnerCmd, ['rm', '-f', containerName], { detached: true, stdio: 'ignore' });
 
         if (webContents && !webContents.isDestroyed()) {
           webContents.send('platform-status-change', { platformId, status: 'STOPPED' });

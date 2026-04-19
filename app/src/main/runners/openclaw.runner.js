@@ -314,8 +314,9 @@ function scheduleModelApply(config, containerName, sendLog) {
   sendLog(`[SYSTEM] Will apply model "${chosenModel}" in 20s after gateway warms up...`);
   setTimeout(() => {
     sendLog(`[SYSTEM] Applying model: ${chosenModel}`);
+    const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
     const result = require('child_process').spawnSync(
-      'docker', ['exec', containerName, 'openclaw', 'models', 'set', chosenModel],
+      runnerCmd, ['exec', containerName, 'openclaw', 'models', 'set', chosenModel],
       { encoding: 'utf8', timeout: 15000 }
     );
     if (result.status === 0) {

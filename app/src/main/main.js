@@ -240,7 +240,8 @@ app.on('before-quit', async (event) => {
       const spawnArgs = openfangEntry.process.spawnargs || [];
       const nameArg = spawnArgs.find(a => a.startsWith('openfang-clawexpress'));
       const cn = nameArg || containerName;
-      await exec(`docker commit ${cn} openfang-custom:latest`);
+      const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+      await exec(`${runnerCmd} commit ${cn} openfang-custom:latest`);
       log.info('[Quit] OpenFang container state saved successfully.');
     } catch (e) {
       log.warn('[Quit] Could not commit OpenFang container state:', e.message);
@@ -341,7 +342,8 @@ ipcMain.handle('platform-health-check', (event, { port, platformId, cwd }) => {
 ipcMain.handle('platform-scan', async () => {
   return new Promise((resolve) => {
     const { spawn } = require('child_process');
-    const proc = spawn('docker', ['ps', '--format', '{{.Names}}\t{{.Status}}'], { shell: true });
+    const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+    const proc = spawn(runnerCmd, ['ps', '--format', '{{.Names}}\t{{.Status}}'], { shell: true });
     const containers = [];
     proc.stdout.on('data', (data) => {
       data.toString().trim().split('\n').filter(Boolean).forEach(line => {

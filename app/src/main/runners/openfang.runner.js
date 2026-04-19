@@ -170,7 +170,8 @@ function prepareDockerScript(scriptArr, config, containerName) {
 
   // 5. Swap image if customized state exists from a previous session
   try {
-    const hasCustom = require('child_process').spawnSync('docker', ['image', 'inspect', 'openfang-custom:latest']).status === 0;
+    const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+    const hasCustom = require('child_process').spawnSync(runnerCmd, ['image', 'inspect', 'openfang-custom:latest']).status === 0;
     if (hasCustom) {
       const imgIdx = scriptArr.indexOf('ghcr.io/rightnow-ai/openfang:latest');
       if (imgIdx !== -1) scriptArr[imgIdx] = 'openfang-custom:latest';
@@ -220,8 +221,9 @@ function scheduleVersionCheck(config, containerName, sendLog, webContents, platf
   if (config.method !== 'docker') return;
   setTimeout(() => {
     try {
+      const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
       const result = require('child_process').spawnSync(
-        'docker', ['exec', containerName, 'openfang', '--version'],
+        runnerCmd, ['exec', containerName, 'openfang', '--version'],
         { encoding: 'utf8', timeout: 5000 }
       );
       if (result.status === 0 && result.stdout) {

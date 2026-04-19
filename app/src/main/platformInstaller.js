@@ -283,12 +283,18 @@ function registerPlatformInstallerHandlers(runningProcesses) {
         let cmd = installScript[0];
         let args = installScript.slice(1);
 
+        // ── Map docker to podman/orbstack if detected ──
+        if (cmd === 'docker' && global.CONTAINER_RUNTIME && global.CONTAINER_RUNTIME !== 'docker') {
+          cmd = global.CONTAINER_RUNTIME;
+        }
+
         // ── Git-less interception for Docker builds ──
-        if (cmd === 'docker' && args[0] === 'build') {
+        if ((cmd === 'docker' || cmd === 'podman') && args[0] === 'build') {
           // If rebuilding, we must clear the saved custom image
           if (isOpenfangPlatform) {
             sendLog('[INFO] Clearing old OpenFang container state before building...');
-            require('child_process').spawnSync('docker', ['rmi', '-f', 'openfang-custom:latest']);
+            const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+            require('child_process').spawnSync(runnerCmd, ['rmi', '-f', 'openfang-custom:latest']);
           }
 
           const gitUrlIndex = args.findIndex(a => typeof a === 'string' && a.startsWith('http') && a.endsWith('.git'));
@@ -396,15 +402,73 @@ function registerPlatformInstallerHandlers(runningProcesses) {
     const checks = [];
     let success = true;
 
-    // 1. Dependency Check
+    // 1. Container Runtime Check (Docker / Podman / OrbStack)
     try {
       if (method === 'docker') {
         const { spawnSync } = require('child_process');
-        const res = spawnSync('docker', ['info']);
-        if (res.status === 0) {
-          checks.push({ id: 'dep', status: 'success', text: 'Docker daemon is running.' });
+        const isWin = process.platform === 'win32';
+
+        // ── Priority order: docker → podman → orbstack ──────────────────────
+        const RUNTIMES = [
+          {
+            id: 'docker',
+            cmd: 'docker',
+            infoArgs: ['info'],
+            versionArgs: ['version', '--format', '{{.Server.Version}}'],
+            label: 'Docker',
+          },
+          {
+            id: 'podman',
+            cmd: 'podman',
+            infoArgs: ['info'],
+            versionArgs: ['version', '--format', '{{.Server.Version}}'],
+            label: 'Podman',
+          },
+          {
+            id: 'orbstack',
+            // OrbStack exposes a Docker-compatible socket but CLI is 'orb' or 'docker' via shim
+            cmd: 'docker',
+            infoArgs: ['info'],
+            versionArgs: ['version', '--format', '{{.Server.Version}}'],
+            detectFn: () => {
+              // OrbStack sets DOCKER_HOST to orbstack's socket
+              const dh = process.env.DOCKER_HOST || '';
+              const isOrb = dh.includes('orbstack') ||
+                fs.existsSync('/run/host-services/ssh-auth.sock') ||      // macOS OrbStack marker
+                spawnSync('orb', ['version'], { timeout: 2000 }).status === 0;
+              return isOrb;
+            },
+            label: 'OrbStack',
+          },
+        ];
+
+        let detected = null;
+        for (const rt of RUNTIMES) {
+          // Custom detect function (for OrbStack)
+          if (rt.detectFn && !rt.detectFn()) continue;
+
+          const res = spawnSync(rt.cmd, rt.infoArgs, { timeout: 5000, shell: isWin });
+          if (res.status === 0) {
+            // Get version string
+            const verRes = spawnSync(rt.cmd, rt.versionArgs, { timeout: 3000, shell: isWin, encoding: 'utf8' });
+            const version = verRes.stdout?.trim() || 'unknown';
+            detected = { ...rt, version };
+            break;
+          }
+        }
+
+        if (detected) {
+          // Store detected runtime globally so processManager can use it
+          global.CONTAINER_RUNTIME = detected.cmd;
+          global.CONTAINER_RUNTIME_ID = detected.id;
+          const note = detected.id === 'podman'
+            ? ' (Podman detected — commands will be mapped automatically)'
+            : detected.id === 'orbstack'
+            ? ' (OrbStack detected — using Docker-compatible API)'
+            : '';
+          checks.push({ id: 'dep', status: 'success', text: `${detected.label} v${detected.version} is running.${note}` });
         } else {
-          checks.push({ id: 'dep', status: 'error', text: 'Docker daemon is not running. Please start Docker Desktop.' });
+          checks.push({ id: 'dep', status: 'error', text: 'No container runtime found. Please install Docker Desktop, Podman, or OrbStack.' });
           success = false;
         }
       } else if (method === 'npm') {
