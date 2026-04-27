@@ -7,10 +7,179 @@ import Dropdown from '../Dropdown/Dropdown';
 import { toast } from '../Toast/Toast';
 import styles from './ConnectionManager.module.css';
 import PlaygroundTest from './PlaygroundTest';
+import { AlertCircle, FlaskConical, Plus } from 'lucide-react';
+
+const AddCustomModelModal = ({ provider, onAdd, onClose, testModel, setDraft }) => {
+  const [newModel, setNewModel] = useState('');
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  const finalModelStr = provider.id === 'codex' && newModel.trim() && !newModel.trim().startsWith('openai-codex/') ? `openai-codex/${newModel.trim()}` : newModel.trim();
+
+  const handleTest = async () => {
+    if (!finalModelStr) return;
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const res = await testModel(finalModelStr);
+      setTestResult(res?.success ? 'success' : 'fail');
+      if (res?.newTokens) {
+        setDraft(d => ({ ...d, apiKey: res.newTokens.access_token, oauthTokens: res.newTokens }));
+      }
+      if (!res?.success) toast.error(`Test failed: ${res?.error || 'Unknown error'}`);
+      else toast.success(`Test passed for ${finalModelStr}`);
+    } catch (e) {
+      setTestResult('fail');
+      toast.error('Test failed: ' + e.message);
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  const submitAdd = () => {
+    if (finalModelStr) onAdd(finalModelStr);
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div onClick={e => e.stopPropagation()} style={{ backgroundColor: 'var(--card-bg)', borderRadius: '12px', width: '400px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', color: 'var(--text-primary)' }}>
+        
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', gap: '6px', marginRight: '16px' }}>
+            <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#ff5f56' }} />
+            <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#ffbd2e' }} />
+            <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#27c93f' }} />
+          </div>
+          <div style={{ flex: 1, fontSize: '15px', fontWeight: 600 }}>Add Custom Model</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', color: 'var(--text-muted)' }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <label style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)' }}>Model ID</label>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <input 
+              autoFocus
+              value={newModel}
+              onChange={e => setNewModel(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') submitAdd(); if (e.key === 'Escape') onClose(); }}
+              placeholder={provider.id === 'cli_gemini' ? 'e.g. gemini-2.5-pro' : 'e.g. claude-opus-4-5'}
+              style={{ flex: 1, padding: '10px 12px', borderRadius: '6px', border: '1px solid #d97757', background: 'transparent', outline: 'none', fontSize: '14px', color: 'var(--text-primary)', transition: 'border-color 0.2s', boxSizing: 'border-box' }}
+            />
+            <button 
+              onClick={handleTest}
+              disabled={!finalModelStr || isTesting}
+              style={{ padding: '0 16px', borderRadius: '6px', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)', fontSize: '13px', cursor: (!finalModelStr || isTesting) ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              {isTesting ? <Loader2 size={14} className="spin" /> : <FlaskConical size={14} />}
+              Test
+            </button>
+          </div>
+          {finalModelStr && (
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              Sent to provider as: <code style={{ background: 'rgba(255,255,255,0.05)', padding: '2px 4px', borderRadius: '4px', border: '1px solid var(--border)' }}>{finalModelStr}</code>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+          <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', background: 'transparent', color: 'var(--text-secondary)', fontSize: '13px', fontWeight: 500, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={submitAdd} disabled={!finalModelStr} style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', background: '#d9a691', color: '#fff', fontSize: '13px', fontWeight: 600, cursor: !finalModelStr ? 'not-allowed' : 'pointer' }}>Add Model</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+const ModelTagsManager = ({ draft, setDraft, provider }) => {
+  const [testResults, setTestResults] = useState({}); // { [model]: 'success' | 'fail' | 'testing' }
+  const [newModel, setNewModel] = useState('');
+  const [isAdding, setIsAdding] = useState(false);
+
+  const prefixHint = provider.id === 'codex' ? 'openai-codex/' : '';
+
+  const handleAdd = (m) => {
+    if (!draft.models.includes(m)) setDraft(d => ({ ...d, models: [...(d.models || []), m] }));
+    setIsAdding(false);
+  };
+
+  const handleRemove = (m) => {
+    setDraft(d => ({ ...d, models: (d.models || []).filter(x => x !== m) }));
+  };
+
+  const testModel = async (model) => {
+    return await window.electron.ipcRenderer.invoke('test-model-chat', {
+      providerId: draft.providerId,
+      model: model,
+      apiKey: draft.apiKey,
+      oauthTokens: draft.oauthTokens,
+      baseUrl: draft.baseUrl,
+      prompt: 'Hello! I am ready!'
+    });
+  };
+
+  const handleTest = async (model) => {
+    setTestResults(prev => ({ ...prev, [model]: 'testing' }));
+    try {
+      const res = await testModel(model);
+      setTestResults(prev => ({ ...prev, [model]: res?.success ? 'success' : 'fail' }));
+      if (res?.newTokens) {
+        setDraft(d => ({ ...d, apiKey: res.newTokens.access_token, oauthTokens: res.newTokens }));
+      }
+      if (!res?.success) toast.error(`Test failed: ${res?.error || 'Unknown error'}`);
+      else toast.success(`Test passed for ${model}`);
+    } catch (e) {
+      setTestResults(prev => ({ ...prev, [model]: 'fail' }));
+      toast.error('Test failed: ' + e.message);
+    }
+  };
+
+  return (
+    <div style={{ padding: '12px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--border)', marginTop: '8px' }}>
+      <div style={{ fontSize: '11px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '8px' }}>Available Models</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+        {(draft.models || []).map(m => {
+          const status = testResults[m];
+          return (
+            <div key={m} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--app-bg)', border: `1px solid ${status === 'success' ? '#22c55e' : status === 'fail' ? '#ef4444' : 'var(--border)'}`, borderRadius: '4px', padding: '4px 8px', fontSize: '11.5px', color: 'var(--text-primary)' }}>
+              {status === 'success' && <CheckCircle2 size={12} color="#22c55e" />}
+              {status === 'fail' && <AlertCircle size={12} color="#ef4444" />}
+              <span>{m}</span>
+              <div style={{ width: '1px', height: '12px', background: 'var(--border)', margin: '0 2px' }}></div>
+              <button onClick={() => handleTest(m)} disabled={status === 'testing'} title="Test this model" style={{ background: 'transparent', border: 'none', padding: '2px', cursor: status === 'testing' ? 'wait' : 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+                {status === 'testing' ? <Loader2 size={12} className="spin" /> : <FlaskConical size={12} />}
+              </button>
+              <button onClick={() => handleRemove(m)} title="Remove model" style={{ background: 'transparent', border: 'none', padding: '2px', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })}
+        {isAdding && (
+          <AddCustomModelModal 
+            provider={provider} 
+            onAdd={handleAdd} 
+            onClose={() => setIsAdding(false)} 
+            testModel={testModel} 
+            setDraft={setDraft} 
+          />
+        )}
+        {!isAdding && (
+          <button onClick={() => setIsAdding(true)} style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'transparent', border: '1px dashed var(--border)', borderRadius: '4px', padding: '4px 8px', fontSize: '11.5px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+            <Plus size={12} /> Add Model
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
 
 // ─── OAuth Flow Subview ───────────────────────────────────────────────────────
 const OAuthFlow = ({ provider, draft, setDraft, onSuccess }) => {
-  const [oauthState, setOauthState] = useState('idle'); // idle|waiting|success|fallback
+  const [oauthState, setOauthState] = useState(draft.apiKey ? 'authenticated' : 'idle'); // idle|waiting|success|fallback|authenticated
   const [authUrl, setAuthUrl] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [callbackUrl, setCallbackUrl] = useState('');
@@ -33,9 +202,39 @@ const OAuthFlow = ({ provider, draft, setDraft, onSuccess }) => {
     });
 
     try {
+      let finalOauthConfig = { ...provider.oauth };
+      
+      // 1. Try to load from environment variables first (.env / .env.local)
+      if (provider.id === 'cli_gemini') {
+        if (import.meta.env.VITE_GEMINI_CLIENT_ID) {
+          finalOauthConfig.clientId = import.meta.env.VITE_GEMINI_CLIENT_ID;
+        }
+        if (import.meta.env.VITE_GEMINI_CLIENT_SECRET) {
+          finalOauthConfig.clientSecret = import.meta.env.VITE_GEMINI_CLIENT_SECRET;
+        }
+      }
+
+      // 2. Load runtime OAuth credentials from Cloudflare if they are still missing
+      if (!finalOauthConfig.clientId || !finalOauthConfig.clientSecret) {
+        try {
+          const res = await fetch('https://clawexpress-api.pages.dev/api/v1/config/oauth');
+          const data = await res.json();
+          if (data && data[provider.id]) {
+            finalOauthConfig.clientId = finalOauthConfig.clientId || data[provider.id].clientId;
+            finalOauthConfig.clientSecret = finalOauthConfig.clientSecret || data[provider.id].clientSecret;
+          }
+        } catch (fetchErr) {
+          console.warn('Failed to load runtime OAuth config:', fetchErr);
+        }
+      }
+
+      if (!finalOauthConfig.clientId) {
+        throw new Error('OAuth Client ID is missing. Please check the backend configuration.');
+      }
+
       const res = await window.electron.ipcRenderer.invoke('oauth-start', {
         providerId: provider.id,
-        oauthConfig: provider.oauth,
+        oauthConfig: finalOauthConfig,
       });
       if (!res.success) {
         setErrorMsg(res.message || 'Failed to start OAuth');
@@ -183,14 +382,31 @@ const OAuthFlow = ({ provider, draft, setDraft, onSuccess }) => {
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>Token saved. Click "Save Connection" to finish.</div>
           </div>
         </div>
-        {draft.models?.length > 0 && (
-          <div style={{ padding: '8px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--border)' }}>
-            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px' }}>Available Models ({draft.models.length}):</div>
-            <select style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--app-bg)', color: 'var(--text-primary)', fontSize: '12px', outline: 'none', opacity: 0.9 }}>
-              {draft.models.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
+        <ModelTagsManager draft={draft} setDraft={setDraft} provider={provider} />
+      </div>
+    );
+  }
+
+  // ── Authenticated (Already have API Key) ──────────────────────────────────
+  if (oauthState === 'authenticated') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderRadius: '8px', background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.25)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <CheckCircle2 size={16} color="#22c55e" />
+            <div>
+              <div style={{ fontSize: '13px', fontWeight: 500, color: '#22c55e' }}>Authenticated</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>This connection already has a valid token.</div>
+            </div>
           </div>
-        )}
+          <button 
+            onClick={() => setOauthState('idle')}
+            style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'var(--text-secondary)', fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Re-authenticate
+          </button>
+        </div>
+        <ModelTagsManager draft={draft} setDraft={setDraft} provider={provider} />
       </div>
     );
   }
@@ -286,15 +502,15 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
       const platformNames = affectedPlatforms.map(p => p.name).join(', ');
       setDeleteConfirm({
         type: 'in-use',
-        title: 'Cảnh báo cấu hình đang sử dụng',
-        message: `Kết nối "${draft.name}" hiện đang được liên kết với nền tảng: ${platformNames}.\n\nNếu xoá, hệ thống sẽ tự động gỡ liên kết khỏi các nền tảng này và thiết lập OpenClaw về mặc định (chưa liên kết). Bạn có chắc chắn muốn tiến hành?`,
+        title: 'Configuration In Use Warning',
+        message: `Connection "${draft.name}" is currently linked to platform: ${platformNames}.\n\nIf deleted, the system will automatically unlink it from these platforms and reset OpenClaw to default (unlinked). Are you sure you want to proceed?`,
         platforms: affectedPlatforms
       });
     } else {
       setDeleteConfirm({
         type: 'normal',
-        title: 'Xóa kết nối API',
-        message: `Bạn có chắc chắn muốn xóa vĩnh viễn kết nối "${draft.name}" không? Thao tác này không thể hoàn tác.`
+        title: 'Delete API Connection',
+        message: `Are you sure you want to permanently delete connection "${draft.name}"? This action cannot be undone.`
       });
     }
   };
@@ -341,10 +557,10 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
 
   return (
     <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-      <div onClick={e => e.stopPropagation()} style={{ maxWidth: '500px', width: '100%', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', color: 'var(--text-primary)' }}>
+      <div onClick={e => e.stopPropagation()} style={{ maxWidth: '650px', width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 20px 40px rgba(0,0,0,0.5)', color: 'var(--text-primary)' }}>
 
         {/* Header */}
-        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
           <div style={{ fontSize: '15px', fontWeight: 600 }}>{getModalTitle()}</div>
           <button style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px', display: 'flex' }} onClick={onClose}>
             <X size={16} />
@@ -352,7 +568,7 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
         </div>
 
         {/* Body */}
-        <div style={{ padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+        <div style={{ padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: '18px', overflowY: 'auto', minHeight: '450px' }}>
 
           {/* Connection Name */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -406,7 +622,7 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
           )}
 
           {/* CLI: executable path */}
-          {draft.category === 'cli' && !isOAuthProvider && (
+          {draft.category === 'cli' && selectedProvider && !isOAuthProvider && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-secondary)' }}>Executable Path</label>
               <input
@@ -480,24 +696,24 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
             draft={draft}
             selectedProvider={selectedProvider}
           />
+        </div>
 
-          {/* Footer */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '14px', borderTop: '1px solid var(--border)', marginTop: '8px' }}>
-            {!isCreating && (
-              <button onClick={handleDelete} style={{ padding: '7px', marginRight: 'auto', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.5)', background: 'rgba(239,68,68,0.08)', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
-                <Trash2 size={14} />
-              </button>
-            )}
-            <button onClick={onClose} style={{ padding: '8px 18px', borderRadius: '6px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}>
-              Cancel
+        {/* Footer */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', padding: '16px 24px', borderTop: '1px solid var(--border)', backgroundColor: 'var(--card-bg)', flexShrink: 0, borderBottomLeftRadius: '12px', borderBottomRightRadius: '12px' }}>
+          {!isCreating && (
+            <button onClick={handleDelete} style={{ padding: '7px', marginRight: 'auto', borderRadius: '6px', border: '1px solid rgba(239,68,68,0.5)', background: 'rgba(239,68,68,0.08)', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+              <Trash2 size={14} />
             </button>
-            <button
-              onClick={handleSave}
-              style={{ padding: '8px 20px', borderRadius: '6px', border: 'none', background: 'var(--text-primary)', color: 'var(--app-bg)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
-            >
-              {isCreating ? 'Save Connection' : 'Save Changes'}
-            </button>
-          </div>
+          )}
+          <button onClick={onClose} style={{ padding: '8px 18px', borderRadius: '6px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}>
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            style={{ padding: '8px 20px', borderRadius: '6px', border: 'none', background: 'var(--text-primary)', color: 'var(--app-bg)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
+          >
+            {isCreating ? 'Save Connection' : 'Save Changes'}
+          </button>
         </div>
       </div>
 
@@ -516,13 +732,13 @@ const ConnectionManagerModal = ({ connectionId, category, onClose }) => {
                 onClick={() => setDeleteConfirm(null)} 
                 style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}
               >
-                Hủy (Cancel)
+                Cancel
               </button>
               <button 
                 onClick={processDelete} 
                 style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', background: '#ef4444', color: '#fff', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
               >
-                Xác nhận xoá
+                Confirm Delete
               </button>
             </div>
           </div>

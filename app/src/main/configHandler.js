@@ -252,35 +252,150 @@ function registerConfigHandlers() {
   });
 
   // ── read-gateway-models ───────────────────────────────────────────────────
-  // Runs `openclaw models list --json` to get the list of models available
-  // to the CLI, then filters by gatewayModelPrefix.
+  // Fetches the model list from the running OpenClaw gateway via its HTTP API.
+  // Resilient strategy:
+  //   1. Try HTTP /v1/models (with & without auth, on platform port then config port)
+  //   2. If prefix filter gives 0 results, return ALL models (don't mask the issue)
+  //   3. Fall back to CLI / docker exec only when HTTP is truly unreachable
   ipcMain.removeHandler('read-gateway-models');
-  ipcMain.handle('read-gateway-models', async (event, { gatewayModelPrefix }) => {
-    const { execFile } = require('child_process');
-    return new Promise((resolve) => {
-      execFile('openclaw', ['models', 'list', '--json'], { timeout: 10000 }, (err, stdout) => {
+  ipcMain.handle('read-gateway-models', async (event, { gatewayModelPrefix, container, port }) => {
+    const os = require('os');
+
+    // Read gateway port from: param → openclaw.json → default 18789
+    let gatewayPort = port || 18789;
+    let tokenStr = null;
+    try {
+      const cfgPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        if (!port && cfg?.gateway?.port) gatewayPort = cfg.gateway.port;
+        tokenStr = cfg?.gateway?.auth?.token || null;
+      }
+    } catch (_) {}
+
+    // Try one URL with optional auth header. Returns model array or null on failure.
+    const tryUrl = async (url, withAuth) => {
+      const controller = new AbortController();
+      const timerId = setTimeout(() => controller.abort(), 5000);
+      const headers = { 'Content-Type': 'application/json' };
+      if (withAuth && tokenStr) headers['Authorization'] = `Bearer ${tokenStr}`;
+      try {
+        const res = await fetch(url, { headers, signal: controller.signal });
+        clearTimeout(timerId);
+        if (!res.ok) {
+          log.warn(`[GatewayModels] ${url} returned HTTP ${res.status}`);
+          return null;
+        }
+        const js = await res.json();
+        const allModels = (js.data || js.models || []).map(m => m.id || m.key).filter(Boolean);
+        log.info(`[GatewayModels] ${url} returned ${allModels.length} total models`);
+        return allModels;
+      } catch (e) {
+        clearTimeout(timerId);
+        log.warn(`[GatewayModels] ${url} fetch failed: ${e.message}`);
+        return null;
+      }
+    };
+
+    // ── Step 1: Try HTTP gateway API ──────────────────────────────────────────
+    const candidates = [
+      `http://127.0.0.1:${gatewayPort}/v1/models`,
+      `http://localhost:${gatewayPort}/v1/models`,
+    ];
+
+    let allModels = null;
+    for (const url of candidates) {
+      // Try with auth first, then without (gateway might not enforce auth on /v1/models)
+      allModels = await tryUrl(url, true);
+      if (allModels === null && tokenStr) {
+        allModels = await tryUrl(url, false);
+      }
+      if (allModels !== null) break;
+    }
+
+    if (allModels !== null) {
+      // Apply prefix filter if requested. If filter gives 0 results, return ALL models
+      // so the user can still pick one — they'll just need to scroll past others.
+      let filtered = allModels;
+      if (gatewayModelPrefix) {
+        const prefixMatched = allModels.filter(m => m.startsWith(gatewayModelPrefix));
+        filtered = prefixMatched.length > 0 ? prefixMatched : allModels;
+        if (prefixMatched.length === 0 && allModels.length > 0) {
+          log.info(`[GatewayModels] No models with prefix "${gatewayModelPrefix}", returning all ${allModels.length} models`);
+        }
+      }
+      return { success: true, models: filtered };
+    }
+
+    // ── Step 2: Fall back to CLI / docker exec ────────────────────────────────
+    const cliResult = await new Promise((resolve) => {
+      const { exec } = require('child_process');
+      let cmd = 'openclaw models list --json';
+      if (container) {
+        cmd = `docker exec ${container} openclaw models list --json`;
+      }
+      // Pass both stdout AND stderr; some CLI versions write JSON to stdout even
+      // on non-zero exit, and some write errors to stderr while stdout has useful data.
+      exec(cmd, { timeout: 10000, windowsHide: true }, (err, stdout, stderr) => {
         if (err) {
-          log.error('[GatewayModels] openclaw models list failed:', err.message);
-          return resolve({ success: false, models: [], message: err.message });
+          // Try to parse stdout anyway — some CLI tools exit non-zero but still emit JSON
+          try {
+            if (stdout && stdout.trim().startsWith('{')) {
+              const js = JSON.parse(stdout);
+              let models = (js.models || []).filter(m => m.available !== false).map(m => m.key).filter(Boolean);
+              if (models.length > 0) {
+                if (gatewayModelPrefix) {
+                  const prefixMatched = models.filter(m => m.startsWith(gatewayModelPrefix));
+                  models = prefixMatched.length > 0 ? prefixMatched : models;
+                }
+                log.info(`[GatewayModels] CLI (stderr-exit) returned ${models.length} models`);
+                return resolve({ success: true, models });
+              }
+            }
+          } catch (_) {}
+          log.warn('[GatewayModels] CLI fallback failed:', err.message.slice(0, 120));
+          return resolve(null); // signal "try next step"
         }
         try {
           const js = JSON.parse(stdout);
-          let models = (js.models || [])
-            .filter(m => m.available !== false)
-            .map(m => m.key)
-            .filter(Boolean);
+          let models = (js.models || []).filter(m => m.available !== false).map(m => m.key).filter(Boolean);
           if (gatewayModelPrefix) {
-            models = models.filter(m => m.startsWith(gatewayModelPrefix));
+            const prefixMatched = models.filter(m => m.startsWith(gatewayModelPrefix));
+            models = prefixMatched.length > 0 ? prefixMatched : models;
           }
-          log.info(`[GatewayModels] openclaw models list returned ${models.length} models`);
+          log.info(`[GatewayModels] CLI returned ${models.length} models`);
           resolve({ success: true, models });
         } catch (parseErr) {
-          log.error('[GatewayModels] JSON parse failed:', parseErr.message);
-          resolve({ success: false, models: [], message: parseErr.message });
+          log.warn('[GatewayModels] CLI JSON parse failed:', parseErr.message);
+          resolve(null);
         }
       });
     });
+
+    if (cliResult) return cliResult;
+
+    // ── Step 3: Last resort — read active model from openclaw.json ────────────
+    // The /v1/models endpoint may not be implemented in all OpenClaw versions,
+    // and `openclaw models list` may not be a valid command. But openclaw.json
+    // always has the currently configured model written by ClawExpress on save.
+    try {
+      const cfgPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const modelField = cfg?.agents?.defaults?.model;
+        const modelStr = typeof modelField === 'string' ? modelField
+          : (typeof modelField?.primary === 'string' ? modelField.primary : null);
+        if (modelStr) {
+          log.info(`[GatewayModels] Fallback: read active model from openclaw.json: ${modelStr}`);
+          return { success: true, models: [modelStr], fromConfig: true };
+        }
+      }
+    } catch (_) {}
+
+    return { success: false, models: [], message: `Gateway HTTP API did not respond on port ${gatewayPort}, and the model list command is unavailable. OpenClaw may still be starting up — try again in a moment.`, gatewayPort };
+
   });
+
 
   // ── verify-api-key ────────────────────────────────────────────────────────
   ipcMain.removeHandler('verify-api-key');

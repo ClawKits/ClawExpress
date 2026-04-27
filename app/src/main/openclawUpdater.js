@@ -160,8 +160,13 @@ function registerOpenclawUpdaterHandlers() {
   });
 
   // ── openclaw-install-version ──────────────────────────────────────────────
-  ipcMain.handle('openclaw-install-version', async (event, { targetVersion, cwd, method }) => {
+  ipcMain.handle('openclaw-install-version', async (event, { targetVersion, cwd, method, logPlatformId }) => {
     if (!targetVersion) return { success: false, reason: 'Target version is required' };
+    const sendLog = (msg) => {
+      if (logPlatformId && event.sender && !event.sender.isDestroyed()) {
+        event.sender.send('platform-log', { platformId: logPlatformId, msg });
+      }
+    };
 
     const util = require('util');
     const exec = util.promisify(require('child_process').exec);
@@ -178,31 +183,49 @@ function registerOpenclawUpdaterHandlers() {
     try {
       if (method === 'docker') {
          log.info(`[Updater] Pulling docker image ghcr.io/openclaw/openclaw:${targetVersion}...`);
+         sendLog(`[SYSTEM] Pulling ghcr.io/openclaw/openclaw:${targetVersion}...`);
          try {
            await new Promise((resolve, reject) => {
              const pullProc = spawn('docker', ['pull', `ghcr.io/openclaw/openclaw:${targetVersion}`], { 
-               stdio: 'ignore', 
+               stdio: ['ignore', 'pipe', 'pipe'],
                env: envWithPath 
              });
+             pullProc.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(line)));
+             pullProc.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`)));
              pullProc.on('close', code => {
-               if (code === 0) resolve();
-               else reject(new Error('Docker pull exited with code ' + code));
+               if (code === 0) {
+                 sendLog('[SUCCESS] Docker image pulled successfully.');
+                 resolve();
+               } else {
+                 reject(new Error('Docker pull exited with code ' + code));
+               }
              });
-             pullProc.on('error', reject);
+             pullProc.on('error', err => {
+               sendLog(`[ERROR] Failed to start docker pull: ${err.message}`);
+               reject(err);
+             });
            });
            
            try {
+               sendLog('[SYSTEM] Tagging pulled image as ghcr.io/openclaw/openclaw:latest...');
                await new Promise((resolve) => {
                  const tagProc = spawn('docker', ['tag', `ghcr.io/openclaw/openclaw:${targetVersion}`, `ghcr.io/openclaw/openclaw:latest`], { 
-                   stdio: 'ignore', 
+                   stdio: ['ignore', 'pipe', 'pipe'],
                    env: envWithPath 
                  });
-                 tagProc.on('close', () => resolve());
+                 tagProc.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(line)));
+                 tagProc.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`)));
+                 tagProc.on('close', (code) => {
+                   if (code === 0) sendLog('[SUCCESS] Docker image tagged as latest.');
+                   else sendLog(`[WARN] Docker tag exited with code ${code}.`);
+                   resolve();
+                 });
                });
            } catch(e) {}
            
            return { success: true, versionInstalled: targetVersion };
          } catch (err) {
+           sendLog(`[ERROR] Docker pull failed: ${err.message}`);
            return { success: false, reason: 'Docker pull failed: ' + err.message };
          }
       }
@@ -227,8 +250,11 @@ function registerOpenclawUpdaterHandlers() {
 
       // 2. Install
       log.info(`[Updater] Installing openclaw@${targetVersion}...`);
+      sendLog(`[SYSTEM] Installing openclaw@${targetVersion}...`);
       await new Promise((resolve, reject) => {
-        const installProcess = spawn('npm', ['install', '-g', `openclaw@${targetVersion}`], { shell: true, stdio: 'ignore', env: envWithPath });
+        const installProcess = spawn('npm', ['install', '-g', `openclaw@${targetVersion}`], { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: envWithPath });
+        installProcess.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(line)));
+        installProcess.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`)));
         installProcess.on('close', code => {
           if (code === 0) resolve();
           else reject(new Error('npm install exited with code ' + code));

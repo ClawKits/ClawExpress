@@ -12,6 +12,7 @@ const UpdateModal = ({ isOpen, onClose, platform, logs, updating, success }) => 
   }, [logs]);
 
   if (!isOpen) return null;
+  const isDockerUpdate = platform?.method === 'docker';
 
   return (
     <div className={styles.overlay} style={{ zIndex: 10000 }}>
@@ -26,12 +27,14 @@ const UpdateModal = ({ isOpen, onClose, platform, logs, updating, success }) => 
             <div style={{ textAlign: 'center', padding: '40px 0' }}>
               <CheckCircle size={48} color="var(--status-running)" style={{ justifySelf: 'center', margin: '0 auto 16px auto' }} />
               <h2 style={{ fontSize: '18px', marginBottom: '8px' }}>Update Complete</h2>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>The latest source has been built and configured.</p>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
+                {isDockerUpdate ? 'The latest Docker image has been pulled and tagged.' : 'The latest source has been built and configured.'}
+              </p>
             </div>
           ) : (
             <div>
               <h2 style={{ fontSize: '16px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                Building from source {updating && <Loader2 size={16} className={styles.spin} />}
+                {isDockerUpdate ? 'Pulling Docker image' : 'Building from source'} {updating && <Loader2 size={16} className={styles.spin} />}
               </h2>
               <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginBottom: '16px' }}>Do not close this window or disconnect from the internet.</p>
               
@@ -60,4 +63,3 @@ const UpdateModal = ({ isOpen, onClose, platform, logs, updating, success }) => 
 };
 
 export default UpdateModal;
-

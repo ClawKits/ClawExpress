@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import styles from '../ConfigPanel/ConfigPanel.module.css';
-import { stripModelPrefix } from '../ConfigPanel/ConfigPanel';
 import Dropdown from '../Dropdown/Dropdown';
 
 const PlaygroundTest = ({ draft, selectedProvider }) => {
@@ -8,19 +7,40 @@ const PlaygroundTest = ({ draft, selectedProvider }) => {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
-  // If draft has fetched models, use them. Otherwise use provider defaults.
-  const availableModels = (draft?.models?.length > 0) ? draft.models : (selectedProvider?.models || []);
+  // CLI providers don't fetch models in Connection Hub, so always use the provider defaults.
+  const isCli = selectedProvider?.category === 'cli';
+  const availableModels = isCli ? (selectedProvider?.models || []) : ((draft?.models?.length > 0) ? draft.models : (selectedProvider?.models || []));
   const defaultModel = availableModels.length > 0 ? availableModels[0] : '';
   const [testModel, setTestModel] = useState(defaultModel);
-  const [useCustomModel, setUseCustomModel] = useState(false);
-  const [customModelStr, setCustomModelStr] = useState('');
+  const [useCustomModel, setUseCustomModel] = useState(availableModels.length === 0);
+  const [customModelStr, setCustomModelStr] = useState(selectedProvider?.defaultModel || '');
 
   // Keep testModel in sync with availableModels
   React.useEffect(() => {
-    if (availableModels.length > 0 && !availableModels.includes(testModel)) {
-      setTestModel(availableModels[0]);
+    if (availableModels.length > 0) {
+      setUseCustomModel(false);
+      if (!availableModels.includes(testModel)) {
+        setTestModel(availableModels[0]);
+      }
+    } else {
+      setUseCustomModel(true);
     }
-  }, [availableModels, testModel]);
+  }, [availableModels]);
+
+  if (!selectedProvider) return null;
+
+  if (isCli) {
+    return (
+      <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', border: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: 500, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '8px' }}>
+          <span style={{ color: '#fbbf24', fontSize: '12px' }}>ℹ️</span> CLI Connection Ready
+        </div>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          Playground testing is not available for CLI providers at this step because the local engine is not yet installed. Your authentication token has been saved successfully. Please click <b>Save Connection</b> to finish, and then proceed to install the <b>OpenClaw Engine</b>.
+        </div>
+      </div>
+    );
+  }
 
   const finalModel = useCustomModel ? customModelStr : testModel;
 
@@ -45,7 +65,7 @@ const PlaygroundTest = ({ draft, selectedProvider }) => {
     }
   };
 
-  if (!selectedProvider) return null;
+
 
   return (
     <div style={{ marginTop: '16px' }}>
@@ -74,6 +94,7 @@ const PlaygroundTest = ({ draft, selectedProvider }) => {
                      onChange={setTestModel} 
                      options={availableModels}
                      minWidth="100%"
+                     dropUp={true}
                    />
                  </div>
               )}
@@ -115,6 +136,8 @@ const PlaygroundTest = ({ draft, selectedProvider }) => {
               borderRadius: '6px', 
               border: '1px solid var(--border)',
               minHeight: '60px',
+              maxHeight: '250px',
+              overflowY: 'auto',
               fontSize: '13px',
               fontFamily: 'monospace',
               whiteSpace: 'pre-wrap',

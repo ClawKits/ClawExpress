@@ -23,8 +23,8 @@ function registerOAuthHandlers() {
       const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
       const state = crypto.randomBytes(16).toString('hex');
 
-      const { authUrl, tokenUrl, clientId, clientSecret, redirectPort, redirectPath, scopes, extraParams } = oauthConfig;
-      const redirectUri = `http://localhost:${redirectPort}${redirectPath}`;
+      const { authUrl, tokenUrl, clientId, clientSecret, redirectPort, redirectPath, redirectHost = 'localhost', scopes, extraParams } = oauthConfig;
+      const redirectUri = `http://${redirectHost}:${redirectPort}${redirectPath}`;
 
       _oauthSessions.set(providerId, { codeVerifier, tokenUrl, clientId, clientSecret, redirectUri, state });
 
@@ -52,7 +52,7 @@ function registerOAuthHandlers() {
           settled = true;
 
           try {
-            const url       = new URL(`http://localhost:${redirectPort}${req.url}`);
+            const url       = new URL(`http://${redirectHost}:${redirectPort}${req.url}`);
             const code      = url.searchParams.get('code');
             const error     = url.searchParams.get('error');
             const errorDesc = url.searchParams.get('error_description');
@@ -83,19 +83,33 @@ function registerOAuthHandlers() {
               <p style="color:#888">You can close this tab and return to ClawExpress.</p>
             </body></html>`);
 
-            const tokenRes = await fetch(tokenUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: new URLSearchParams({
-                grant_type:    'authorization_code',
-                code,
-                redirect_uri:  redirectUri,
-                client_id:     clientId,
-                code_verifier: codeVerifier,
-                ...(clientSecret ? { client_secret: clientSecret } : {})
-              }).toString(),
-            });
-            const tokens = await tokenRes.json();
+            let tokenRes, tokens;
+            
+            if (oauthConfig.proxyExchangeUrl) {
+              // Proxy exchange (e.g. through Cloudflare to protect client_secret)
+              tokenRes = await fetch(oauthConfig.proxyExchangeUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code, redirect_uri: redirectUri, code_verifier: codeVerifier }),
+              });
+              tokens = await tokenRes.json();
+            } else {
+              // Direct local exchange
+              tokenRes = await fetch(tokenUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                  grant_type:    'authorization_code',
+                  code,
+                  redirect_uri:  redirectUri,
+                  client_id:     clientId,
+                  code_verifier: codeVerifier,
+                  ...(clientSecret ? { client_secret: clientSecret } : {})
+                }).toString(),
+              });
+              tokens = await tokenRes.json();
+            }
+
             log.info('[OAuth] Token response:', JSON.stringify(tokens).slice(0, 200));
             if (!tokenRes.ok) return reject(new Error(tokens.error_description || tokens.error || `Token exchange failed (HTTP ${tokenRes.status})`));
             resolve({ tokens });
@@ -107,8 +121,8 @@ function registerOAuthHandlers() {
           }
         });
 
-        server.listen(redirectPort, 'localhost', () => {
-          log.info(`[OAuth] Callback server on localhost:${redirectPort}${redirectPath}`);
+        server.listen(redirectPort, redirectHost === 'localhost' ? '127.0.0.1' : redirectHost, () => {
+          log.info(`[OAuth] Callback server on ${redirectHost}:${redirectPort}${redirectPath}`);
         });
         server.on('error', (e) => reject(new Error(`Port ${redirectPort} unavailable: ${e.message}`)));
         // 5-minute timeout

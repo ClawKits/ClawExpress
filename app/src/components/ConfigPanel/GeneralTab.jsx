@@ -185,25 +185,25 @@ const GeneralTab = ({
           />
         </div>
 
-        {activeConnection && (
-          <div className={styles.field}>
-            <label className={styles.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span>Target Model</span>
-              {(activeConnection.baseUrl || activeProvider?.modelsEndpoint || activeProvider?.gatewayModelPrefix) && (
-                <button
-                  type="button"
-                  onClick={fetchModels}
-                  disabled={fetchingModels}
-                  style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', padding: '0' }}
-                >
-                  <RotateCw size={11} style={{ animation: fetchingModels ? 'spin 1s linear infinite' : 'none' }} />
-                  {fetchingModels ? 'Fetching...' : 'Refresh Models'}
-                </button>
-              )}
-            </label>
-            {(() => {
-              const modelList = availableModels.length > 0 ? availableModels : (activeConnection.models || []);
-              return !useCustomModel && modelList.length > 0 ? (
+        {activeConnection && (() => {
+          const modelList = availableModels.length > 0 ? availableModels : (activeConnection.models || []);
+          return (
+            <div className={styles.field}>
+              <label className={styles.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span>Target Model {modelList.length > 0 ? `(${modelList.length} available)` : ''}</span>
+                {(activeConnection.baseUrl || activeProvider?.modelsEndpoint || activeProvider?.gatewayModelPrefix) && (
+                  <button
+                    type="button"
+                    onClick={fetchModels}
+                    disabled={fetchingModels}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', padding: '0' }}
+                  >
+                    <RotateCw size={11} style={{ animation: fetchingModels ? 'spin 1s linear infinite' : 'none' }} />
+                    {fetchingModels ? 'Fetching...' : 'Refresh Models'}
+                  </button>
+                )}
+              </label>
+              {!useCustomModel && modelList.length > 0 ? (
                 <div style={{ display: 'flex', gap: '6px' }}>
                   <div style={{ flex: 1 }}>
                     <Dropdown value={selectedModel} options={modelList} onChange={setSelectedModel} minWidth="100%" />
@@ -235,16 +235,16 @@ const GeneralTab = ({
                     </button>
                   )}
                 </div>
-              );
-            })()}
-            <span className={styles.hint}>
-              Active:{' '}
-              <code style={{ fontSize: '11px', background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: '3px' }}>
-                {activeModel || 'Not Set'}
-              </code>
-            </span>
-          </div>
-        )}
+              )}
+              <span className={styles.hint}>
+                Active:{' '}
+                <code style={{ fontSize: '11px', background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: '3px' }}>
+                  {activeModel || 'Not Set'}
+                </code>
+              </span>
+            </div>
+          );
+        })()}
       </div>
     )}
 

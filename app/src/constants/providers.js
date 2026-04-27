@@ -65,10 +65,10 @@ export const PROVIDERS = [
     envKey: 'OPENAI_CODEX_API_KEY',
     hint: 'OAuth via browser',
     url: '',
-    defaultModel: 'openai-codex/gpt-5.4',
-    models: [],
-    // Models are fetched live from the OpenClaw gateway (/v1/models) and
-    // filtered by this prefix. No hardcoded list — gateway is source of truth.
+    defaultModel: 'openai-codex/gpt-5.5',
+    models: ['openai-codex/gpt-5.5', 'openai-codex/gpt-5.4'],
+    // Models are fetched live from the OpenClaw gateway (/v1/models) after installation.
+    // We provide a baseline list above so non-technical users have a friendly dropdown during initial setup.
     gatewayModelPrefix: 'openai-codex/',
     category: PROVIDER_CATEGORIES.CLI,
     oauth: {
@@ -100,15 +100,16 @@ export const PROVIDERS = [
     // Users must use an API key from console.anthropic.com instead.
   },
   { id: 'cli_gemini', label: 'Gemini CLI', envKey: 'GEMINI_CLI_TOKEN', hint: 'OAuth via browser', url: '', defaultModel: 'gemini-2.5-pro',
-    models: [], gatewayModelPrefix: 'gemini/', category: PROVIDER_CATEGORIES.CLI,
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'], gatewayModelPrefix: 'gemini/', category: PROVIDER_CATEGORIES.CLI,
     oauth: {
-      authUrl: 'https://accounts.google.com/o/oauth2/auth',
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
       tokenUrl: 'https://oauth2.googleapis.com/token',
-      clientId: '',     // loaded at runtime from /api/v1/config/oauth
-      clientSecret: '', // loaded at runtime from /api/v1/config/oauth
+      clientId: '',
+      clientSecret: '',
+      proxyExchangeUrl: 'https://clawexpress-api.pages.dev/api/v1/auth/gemini-exchange',
       redirectPort: 1456,
       redirectPath: '/',
-      scopes: 'openid email profile https://www.googleapis.com/auth/cloud-platform',
+      scopes: 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
       extraParams: {
         access_type: 'offline',
         prompt: 'consent'

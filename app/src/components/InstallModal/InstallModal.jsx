@@ -75,10 +75,14 @@ const ConnectionPicker = ({ value, onChange }) => {
   useEffect(() => {
     const conn = liveConnections.find(c => c.id === selectedConnectionId);
     if (conn) {
-      setModels(conn.models || []);
-      if (conn.models?.length > 0 && !conn.models.includes(selectedModel)) {
-        setSelectedModel(conn.models[0]);
-      } else if (!conn.models?.length) {
+      const isCli = conn.category === 'cli';
+      const provider = PROVIDERS.find(p => p.id === conn.providerId);
+      const connModels = isCli ? (provider?.models || []) : (conn.models || []);
+      
+      setModels(connModels);
+      if (connModels.length > 0 && !connModels.includes(selectedModel)) {
+        setSelectedModel(connModels[0]);
+      } else if (!connModels.length) {
         setSelectedModel('');
       }
     }
@@ -93,7 +97,8 @@ const ConnectionPicker = ({ value, onChange }) => {
           provider: conn.providerId, 
           key: conn.apiKey, 
           baseUrl: conn.baseUrl,
-          model: selectedModel 
+          model: selectedModel,
+          oauthTokens: conn.oauthTokens
         });
       }
     }

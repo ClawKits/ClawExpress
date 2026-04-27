@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDown } from 'lucide-react';
 
-const Dropdown = ({ value, options, onChange, minWidth = '130px' }) => {
+const Dropdown = ({ value, options, onChange, minWidth = '130px', dropUp = false }) => {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -47,15 +47,14 @@ const Dropdown = ({ value, options, onChange, minWidth = '130px' }) => {
       {isOpen && (
         <div style={{
           position: 'absolute',
-          top: '100%',
+          ...(dropUp ? { bottom: '100%', marginBottom: '4px' } : { top: '100%', marginTop: '4px' }),
           right: 0,
-          marginTop: '4px',
           background: 'var(--card-bg)',
           border: '1px solid var(--border)',
           borderRadius: '6px',
           minWidth: minWidth,
           width: minWidth === '100%' ? '100%' : 'auto',
-          zIndex: 10,
+          zIndex: 100,
           boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
           maxHeight: '250px',
           overflowY: 'auto',

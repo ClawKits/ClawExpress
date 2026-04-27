@@ -4,6 +4,7 @@ import { usePlatformStore } from '../../store/usePlatformStore';
 import { useConnectionStore } from '../../store/useConnectionStore';
 import { toast } from '../Toast/Toast';
 import { PROVIDERS, PROVIDER_CATEGORIES } from '../../constants/providers';
+import { stripModelPrefix } from '../../utils/modelUtils';
 import ConnectionManagerModal from '../ConnectionManager/ConnectionManagerModal';
 import QRLoginModal from '../QRLoginModal/QRLoginModal';
 import RawConfigEditor from '../RawConfigEditor/RawConfigEditor';
@@ -32,25 +33,6 @@ const DEFAULT_SCHEMA = {
 const INTERNAL_KEYS = ['CLAWEXPRESS_CONNECTION_ID', 'CLAWEXPRESS_PROVIDER'];
 const CHAT_KEYS = ['TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'ZALO_BOT_TOKEN', 'LINE_CHANNEL_TOKEN', 'MSTEAMS_BOT_TOKEN', 'TWITCH_TOKEN'];
 
-export const stripModelPrefix = (model) => {
-  if (!model) return '';
-  return model
-    .replace(/^litellm\//i, '')
-    .replace(/^openai-codex\//i, '')
-    .replace(/^openai\//i, '')
-    .replace(/^ollama\//i, '')
-    .replace(/^nvidia_nim\//i, '')
-    .replace(/^groq\//i, '')
-    .replace(/^xai\//i, '')
-    .replace(/^openrouter\//i, '')
-    .replace(/^anthropic\//i, '')
-    .replace(/^gemini\//i, '')
-    .replace(/^deepseek\//i, '')
-    .replace(/^together_ai\//i, '')
-    .replace(/^moonshot\//i, '')
-    .replace(/^mistral\//i, '')
-    .replace(/^local\//i, '');
-};
 
 const ConfigPanel = ({ platform: platformProp, onClose }) => {
   // Subscribe to LIVE platform data from the store (the prop is a stale snapshot)
@@ -79,6 +61,7 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
 
   const [saved, setSaved] = useState(false);
   const [showUninstallModal, setShowUninstallModal] = useState(false);
+  const [hasLoadedConfig, setHasLoadedConfig] = useState(false);
   const [restartRequired, setRestartRequired] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -198,7 +181,8 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
           setCustomModel(rawModel);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setHasLoadedConfig(true));
   }, [platform.cwd]);
 
   // Derive active connection/provider
@@ -225,22 +209,19 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
         setUseCustomModel(true);
         setCustomModel(selectedModel);
       }
+    } else if (hasLoadedConfig && activeConnection && !selectedModel && models.length > 0) {
+      setSelectedModel(models[0]);
     }
-  }, [selectedConnectionId, connections.length, selectedModel, activeConnection, availableModels]);
+  }, [hasLoadedConfig, selectedConnectionId, connections.length, selectedModel, activeConnection, availableModels]);
 
   // Merge provider static models with any extra fetched/saved models from connection
   useEffect(() => {
     if (!activeProvider) { setAvailableModels([]); return; }
     const providerModels = activeProvider.models || [];
-    const providerPrefixMatch = activeProvider.defaultModel?.match(/^[^/]+\//);
-    const expectedPrefix = providerPrefixMatch ? providerPrefixMatch[0] : '';
-    const connectionModels = (activeConnection?.models || []).filter(m => {
-      if (expectedPrefix && !m.startsWith(expectedPrefix)) return false;
-      return !providerModels.includes(m);
-    });
+    const connectionModels = (activeConnection?.models || []).filter(m => !providerModels.includes(m));
     const merged = [...new Set([...providerModels, ...connectionModels])];
     setAvailableModels(merged.length > 0 ? merged : []);
-  }, [selectedConnectionId, activeProvider, connections]);
+  }, [selectedConnectionId, activeProvider, activeConnection]);
 
   const fetchModels = async () => {
     const isCliProvider = activeProvider?.category === 'cli' && activeProvider?.gatewayModelPrefix;
@@ -249,10 +230,15 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
     try {
       let res;
       if (isCliProvider) {
-        // CLI providers: run `openclaw models list --json` directly — no gateway needed.
-        res = await window.electron?.ipcRenderer.invoke('read-gateway-models', {
-          gatewayModelPrefix: activeProvider.gatewayModelPrefix,
-        });
+        // CLI providers (Codex, Gemini CLI) use OAuth access tokens, which CANNOT
+        // be used to query the vendor's developer APIs (like api.openai.com) to list models.
+        // Additionally, the OpenClaw Gateway's /v1/models endpoint is often unreachable.
+        // Therefore, we return the hardcoded models list and show an info toast.
+        res = {
+          success: true,
+          models: activeProvider.models || [],
+          isCliFallback: true
+        };
       } else {
         res = await window.electron?.ipcRenderer.invoke('fetch-models', {
           baseUrl: activeConnection.baseUrl,
@@ -265,10 +251,33 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
         setAvailableModels(res.models);
         setUseCustomModel(false);
         setSelectedModel(res.models[0]);
-        const { updateConnection } = useConnectionStore.getState();
-        await updateConnection(activeConnection.id, { models: res.models });
+        if (res.isCliFallback) {
+          toast.info('CLI providers use a predefined list. You can manually type any supported model name (e.g., gpt-4o) in the Custom box.');
+        } else if (!res.fromConfig) {
+          // Only persist to connection store when coming from live gateway (not config fallback)
+          const { updateConnection } = useConnectionStore.getState();
+          await updateConnection(activeConnection.id, { models: res.models });
+        } else {
+          toast.info('Showing model from saved config. Live model list unavailable — the gateway may not expose /v1/models.');
+        }
       } else {
-        toast.error(res?.message || 'No models returned from provider');
+        // Map backend error to a short, actionable message.
+        const msg = res?.message || '';
+        const portHint = res?.gatewayPort ? ` (port ${res.gatewayPort})` : '';
+        const isPortIssue = msg.includes('port') || msg.includes('ECONNREFUSED') || msg.includes('did not respond');
+        const isNotInstalled = msg.includes('CLI not found') || msg.includes('ENOENT') || msg.includes('EINVAL');
+        const isOffline = msg.includes('not running') || msg.includes('Could not reach');
+
+        if (isPortIssue || isNotInstalled) {
+          toast.warn(`Cannot reach OpenClaw gateway${portHint}. Make sure OpenClaw is running and the port is correct.`);
+        } else if (isOffline) {
+          toast.warn('OpenClaw is offline. Start it first to refresh the model list.');
+        } else if (!res?.success && msg) {
+          toast.error(msg);
+        } else {
+          toast.warn('No models returned. The gateway may still be starting up — try again in a moment.');
+        }
+        // Keep the current model selection intact — don't reset to empty.
       }
     } catch (e) {
       toast.error('Error fetching models: ' + e.message);
@@ -361,26 +370,25 @@ const ConfigPanel = ({ platform: platformProp, onClose }) => {
     });
 
     const envToRemove = ALL_REMOVABLE_KEYS.filter(k => !(k in envObj));
-    if (draft.cwd) {
-      await window.electron?.ipcRenderer.invoke('write-platform-config', {
-        platformId: platform.registryId || platform.id,
-        cwd: draft.cwd,
-        env: envObj,
-        envToRemove,
-        model: finalModel || undefined,
-        customProxyTarget: cleanCustomTarget,
-        channelConfig: {
-          whatsapp: {
-            dmPolicy: waConfig.dmPolicy,
-            allowFrom: waConfig.dmPolicy === 'open' ? ['*'] : waConfig.allowFrom.split(',').map(s => s.trim()).filter(Boolean),
-          },
-          zalouser: {
-            dmPolicy: zaloConfig.dmPolicy,
-            allowFrom: zaloConfig.dmPolicy === 'open' ? ['*'] : zaloConfig.allowFrom.split(',').map(s => s.trim()).filter(Boolean),
-          },
+    await window.electron?.ipcRenderer.invoke('write-platform-config', {
+      platformId: platform.registryId || platform.id,
+      cwd: draft.cwd || undefined,
+      env: envObj,
+      envToRemove,
+      model: finalModel || undefined,
+      oauthTokens: activeProvider?.id === 'codex' ? activeConnection?.oauthTokens : undefined,
+      customProxyTarget: cleanCustomTarget,
+      channelConfig: {
+        whatsapp: {
+          dmPolicy: waConfig.dmPolicy,
+          allowFrom: waConfig.dmPolicy === 'open' ? ['*'] : waConfig.allowFrom.split(',').map(s => s.trim()).filter(Boolean),
         },
-      });
-    }
+        zalouser: {
+          dmPolicy: zaloConfig.dmPolicy,
+          allowFrom: zaloConfig.dmPolicy === 'open' ? ['*'] : zaloConfig.allowFrom.split(',').map(s => s.trim()).filter(Boolean),
+        },
+      },
+    });
 
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);

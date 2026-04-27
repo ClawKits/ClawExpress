@@ -14,6 +14,29 @@ const path   = require('path');
 const fs     = require('fs');
 const os     = require('os');
 const { fireSpawn, startReadyPoller } = require('./shared');
+const { syncCodexAuthProfile } = require('../openclawCodexAuth');
+
+/**
+ * Safely write openclaw.json AND update backup files simultaneously.
+ * 
+ * OpenClaw has an internal "config integrity" mechanism that detects when
+ * the config file shrinks compared to openclaw.json.last-good, and auto-
+ * restores from the backup — clobbering our legitimate changes.
+ * 
+ * By writing the same content to both files atomically, the size-drop
+ * comparison always passes (new == last-good), so OpenClaw never triggers
+ * the auto-restore.
+ * 
+ * @param {string} configPath - Full path to openclaw.json
+ * @param {string} jsonContent - The JSON string to write
+ */
+function safeWriteOpenClawConfig(configPath, jsonContent) {
+  fs.writeFileSync(configPath, jsonContent, 'utf8');
+  // Update the backup files so OpenClaw's size-drop detection never triggers
+  const dir = path.dirname(configPath);
+  try { fs.writeFileSync(path.join(dir, 'openclaw.json.last-good'), jsonContent, 'utf8'); } catch (_) {}
+  try { fs.writeFileSync(path.join(dir, 'openclaw.json.bak'), jsonContent, 'utf8'); } catch (_) {}
+}
 
 // ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -39,7 +62,7 @@ function containsStalePath(val) {
   return false;
 }
 
-function fixSessionFilePaths(openclawDir) {
+function fixSessionFilePaths(openclawDir, isDocker = false) {
   try {
     const agentsDir = path.join(openclawDir, 'agents');
     if (!fs.existsSync(agentsDir)) return;
@@ -51,9 +74,18 @@ function fixSessionFilePaths(openclawDir) {
         const sessionsDir = path.join(agentsDir, agentName, 'sessions');
         let modified = false;
         for (const session of Object.values(sessions)) {
-          if (session.sessionFile && (session.sessionFile.includes('\\home\\node\\') || session.sessionFile.includes('/home/node/'))) {
-            session.sessionFile = path.join(sessionsDir, path.basename(session.sessionFile));
-            modified = true;
+          if (session.sessionFile) {
+            const hasDockerPath = session.sessionFile.includes('\\home\\node\\') || session.sessionFile.includes('/home/node/');
+            const hasWindowsPath = session.sessionFile.includes(':\\');
+            const hasHostPath = hasWindowsPath || (session.sessionFile.startsWith('/') && !hasDockerPath);
+
+            if (isDocker && hasHostPath) {
+              session.sessionFile = `/home/node/.openclaw/agents/${agentName}/sessions/${path.basename(session.sessionFile)}`;
+              modified = true;
+            } else if (!isDocker && hasDockerPath) {
+              session.sessionFile = path.join(sessionsDir, path.basename(session.sessionFile));
+              modified = true;
+            }
           }
           if (session.skillsSnapshot && containsStalePath(session.skillsSnapshot)) {
             delete session.skillsSnapshot;
@@ -83,11 +115,28 @@ function removeFakePlugins(cfg) {
 }
 
 function coerceModel(cfg) {
-  if (cfg.agents?.defaults?.model && typeof cfg.agents.defaults.model === 'object' && cfg.agents.defaults.model.primary) {
-    cfg.agents.defaults.model = cfg.agents.defaults.model.primary;
-    return true;
-  }
+  // DO NOTHING. Mutating model to a string breaks OpenClaw 2026 schema validation
+  // which expects `model: { primary: "..." }`
   return false;
+}
+
+function removePublishMappings(scriptArr, shouldRemove) {
+  for (let i = 0; i < scriptArr.length; i++) {
+    const arg = scriptArr[i];
+    if ((arg === '-p' || arg === '--publish') && typeof scriptArr[i + 1] === 'string' && shouldRemove(scriptArr[i + 1])) {
+      scriptArr.splice(i, 2);
+      i -= 1;
+      continue;
+    }
+
+    if (typeof arg === 'string' && (arg.startsWith('-p=') || arg.startsWith('--publish='))) {
+      const mapping = arg.slice(arg.indexOf('=') + 1);
+      if (shouldRemove(mapping)) {
+        scriptArr.splice(i, 1);
+        i -= 1;
+      }
+    }
+  }
 }
 
 /**
@@ -98,7 +147,7 @@ function prepareConfigForNpm(port) {
   try {
     const cfgPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
     if (!fs.existsSync(cfgPath)) return;
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, ''));
     let modified = false;
 
     if (!cfg.gateway) cfg.gateway = {};
@@ -114,9 +163,14 @@ function prepareConfigForNpm(port) {
     // Stale ports from previous runs cause WS upgrade rejections when OpenClaw
     // auto-increments the port (e.g. 18789 → 18791) due to a zombie holding 18789.
     const required = [
+      "*",
       `http://localhost:${port}`,
       `http://127.0.0.1:${port}`,
       `http://[::1]:${port}`,
+      `http://localhost:5173`,
+      `http://127.0.0.1:5173`,
+      `app://.`,
+      `file://`
     ];
     const existing = cfg.gateway.controlUi.allowedOrigins || [];
     // Rebuild: keep non-port-specific entries, replace any :PORT entries with target.
@@ -131,11 +185,12 @@ function prepareConfigForNpm(port) {
     }
 
     fixSessionFilePaths(path.join(os.homedir(), '.openclaw'));
+    syncCodexAuthProfile(path.join(os.homedir(), '.openclaw'), cfg.env);
     if (removeDockerPaths(cfg, '/home/node/')) modified = true;
     if (removeFakePlugins(cfg)) modified = true;
-    if (coerceModel(cfg)) modified = true;
+    // Removed coerceModel call to prevent schema breaking
 
-    if (modified) fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+    if (modified) safeWriteOpenClawConfig(cfgPath, JSON.stringify(cfg, null, 2));
   } catch (_) {}
 }
 
@@ -147,31 +202,98 @@ function prepareConfigForNpm(port) {
 function prepareConfigForDocker(openclawDir, gatewayPort = 18789) {
   try {
     const cfgPath = path.join(openclawDir, 'openclaw.json');
-    if (!fs.existsSync(cfgPath)) return;
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    let cfg = {};
+    if (fs.existsSync(cfgPath)) cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, ''));
+
+    fixSessionFilePaths(openclawDir, true);
+    syncCodexAuthProfile(openclawDir, cfg.env);
     let modified = false;
 
     if (!cfg.gateway) cfg.gateway = {};
-    fixSessionFilePaths(openclawDir);
     if (removeDockerPaths(cfg, '/home/node/')) modified = true;
+
+    // Normalize model IDs: strip stacked provider prefixes (e.g. 'openai-codex/openai/gpt-5.4')
+    // and rebuild to the correct single-prefix form OpenClaw expects.
+    const OPENCLAW_MODEL_PREFIXES = ['openai-codex/', 'openai/', 'litellm/', 'anthropic/', 'gemini/',
+      'groq/', 'deepseek/', 'openrouter/', 'xai/', 'together_ai/', 'moonshot/', 'mistral/', 'nvidia_nim/'];
+    const stripAllPrefixes = (str) => {
+      let s = str; let changed = true;
+      while (changed) {
+        changed = false;
+        const p = OPENCLAW_MODEL_PREFIXES.find(px => s.toLowerCase().startsWith(px));
+        if (p) { s = s.slice(p.length); changed = true; }
+      }
+      return s;
+    };
+    const normalizeModelForOpenClaw = (modelStr) => {
+      if (typeof modelStr !== 'string') return modelStr;
+      // Re-apply the correct top-level prefix based on the original prefix.
+      if (modelStr.toLowerCase().startsWith('openai-codex/')) {
+        return `openai-codex/${stripAllPrefixes(modelStr)}`;
+      }
+      // All other prefixes: strip down to single-prefix form.
+      const p = OPENCLAW_MODEL_PREFIXES.find(px => modelStr.toLowerCase().startsWith(px));
+      if (!p) return modelStr;
+      const bare = stripAllPrefixes(modelStr);
+      return `${p}${bare}`;
+    };
+    if (cfg.agents) {
+      const applyToDefaults = (defaults) => {
+        if (!defaults) return false;
+        let m = false;
+        if (typeof defaults.model === 'string') {
+          const fixed = normalizeModelForOpenClaw(defaults.model);
+          if (fixed !== defaults.model) { defaults.model = fixed; m = true; }
+        } else if (defaults.model && typeof defaults.model === 'object') {
+          if (typeof defaults.model.primary === 'string') {
+            const fixed = normalizeModelForOpenClaw(defaults.model.primary);
+            if (fixed !== defaults.model.primary) { defaults.model.primary = fixed; m = true; }
+          }
+        }
+        if (defaults.models && typeof defaults.models === 'object') {
+          const fixedModels = {};
+          for (const [k, v] of Object.entries(defaults.models)) {
+            const fk = normalizeModelForOpenClaw(k);
+            fixedModels[fk] = v;
+            if (fk !== k) m = true;
+          }
+          if (m) defaults.models = fixedModels;
+        }
+        return m;
+      };
+      if (applyToDefaults(cfg.agents.defaults)) modified = true;
+    }
+
     if (cfg.gateway.bind !== 'lan') { cfg.gateway.bind = 'lan'; modified = true; }
     if (!cfg.gateway.auth) cfg.gateway.auth = { mode: 'token' };
 
-    // Patch allowedOrigins for both gateway port AND browser/server port (gateway+2).
+    // Publish only the configured gateway port. The internal browser/server
+    // port is used as a readiness signal, not as a public host port.
     if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
     const browserPort = gatewayPort + 2;
     const required = [
+      "*",
       `http://localhost:${gatewayPort}`, `http://127.0.0.1:${gatewayPort}`,
-      `http://localhost:${browserPort}`, `http://127.0.0.1:${browserPort}`,
+      `http://localhost:5173`, `http://127.0.0.1:5173`,
+      `app://.`, `file://`
     ];
     const existing = cfg.gateway.controlUi.allowedOrigins || [];
-    const merged = [...new Set([...existing, ...required])];
-    if (merged.length !== existing.length) { cfg.gateway.controlUi.allowedOrigins = merged; modified = true; }
+    const staleBrowserOrigins = new Set([
+      `http://localhost:${browserPort}`,
+      `http://127.0.0.1:${browserPort}`,
+    ]);
+    const merged = [...new Set([...existing.filter(o => !staleBrowserOrigins.has(o)), ...required])];
+    if (JSON.stringify(merged) !== JSON.stringify(existing)) { cfg.gateway.controlUi.allowedOrigins = merged; modified = true; }
 
-    if (removeFakePlugins(cfg)) modified = true;
-    if (coerceModel(cfg)) modified = true;
+    // Explicitly disable bonjour plugin in docker mode to prevent "CIAO PROBING CANCELLED" crashes
+    if (!cfg.plugins) cfg.plugins = { entries: {} };
+    if (!cfg.plugins.entries) cfg.plugins.entries = {};
+    if (!cfg.plugins.entries.bonjour || cfg.plugins.entries.bonjour.enabled !== false) {
+      cfg.plugins.entries.bonjour = { ...cfg.plugins.entries.bonjour, enabled: false };
+      modified = true;
+    }
 
-    if (modified) fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+    if (modified) safeWriteOpenClawConfig(cfgPath, JSON.stringify(cfg, null, 2));
   } catch (_) {}
 }
 
@@ -242,24 +364,44 @@ function prepareDockerScript(scriptArr, config, containerName) {
     const prev = scriptArr[badMountIdx - 1] === '-v' ? badMountIdx - 1 : badMountIdx;
     scriptArr.splice(prev, badMountIdx - prev + 1);
   }
-  const finalRunIdx = scriptArr.indexOf('run');
-  scriptArr.splice(finalRunIdx + 1, 0, '-v', `${openclawDir}:/home/node/.openclaw`);
+  const finalRunIdx = scriptArr.lastIndexOf('run');
+  scriptArr.splice(finalRunIdx + 1, 0, 
+    '-v', `${openclawDir}:/home/node/.openclaw`,
+    '--tmpfs', '/home/node/.openclaw/canvas:uid=1000,gid=1000,exec',
+    '-v', 'openclaw-plugins-cache:/home/node/.openclaw/plugin-runtime-deps'
+  );
 
   // Env vars & port
   const nameIndex = scriptArr.indexOf('--name');
   const injectIdx = nameIndex !== -1 ? nameIndex + 2 : finalRunIdx + 1;
+  const gatewayPort = config.port || 18789;
+  const browserPort = gatewayPort + 2;   // OpenClaw browser/server is gateway+2 (e.g. 18789→18791)
 
   if (!scriptArr.includes('OPENCLAW_GATEWAY_BIND=lan')) scriptArr.splice(injectIdx, 0, '-e', 'OPENCLAW_GATEWAY_BIND=lan');
   if (!scriptArr.includes('HOST=0.0.0.0'))              scriptArr.splice(injectIdx, 0, '-e', 'HOST=0.0.0.0');
 
-  const gatewayPort = config.port || 18789;
-  const browserPort = gatewayPort + 2;   // OpenClaw browser/server is gateway+2 (e.g. 18789→18791)
+  // Force allowedOrigins via env var — this bypasses OpenClaw's internal
+  // backup/restore mechanism that keeps clobbering the config file origins.
+  const originsJson = JSON.stringify([
+    `http://localhost:${gatewayPort}`, `http://127.0.0.1:${gatewayPort}`,
+    `http://localhost:5173`, `http://127.0.0.1:5173`,
+    `app://.`, `file://`
+  ]);
+  scriptArr.splice(injectIdx, 0,
+    '-e', `OPENCLAW_GATEWAY_CONTROLUI_ALLOWEDORIGINS=${originsJson}`,
+    '-e', 'OPENCLAW_GATEWAY_CONTROLUI_DANGEROUSLYALLOWHOSTHEADERORIGINFALLBACK=true'
+  );
 
-  const portMap        = `${gatewayPort}:18789`;
-  const browserPortMap = `${browserPort}:${18789 + 2}`;   // 18791:18791
+  const portMap = `${gatewayPort}:18789`;
+  const isBrowserPortMapping = (mapping) => {
+    const parts = String(mapping).split(':');
+    const containerPort = parts[parts.length - 1]?.split('/')[0];
+    const hostPort = parts.length >= 2 ? parts[parts.length - 2] : null;
+    return containerPort === String(18789 + 2) || hostPort === String(browserPort);
+  };
 
-  if (!scriptArr.includes(portMap))        scriptArr.splice(injectIdx, 0, '-p', portMap);
-  if (!scriptArr.includes(browserPortMap)) scriptArr.splice(injectIdx, 0, '-p', browserPortMap);
+  removePublishMappings(scriptArr, isBrowserPortMapping);
+  if (!scriptArr.includes(portMap)) scriptArr.splice(injectIdx, 0, '-p', portMap);
 
   return scriptArr;
 }
@@ -327,6 +469,36 @@ function scheduleModelApply(config, containerName, sendLog) {
   }, 20000);
 }
 
+// ── Post-start config validation ──────────────────────────────────────────────
+
+/**
+ * Run `openclaw doctor --fix` inside the Docker container after startup.
+ *
+ * This uses OpenClaw's own built-in validation to auto-fix any schema issues
+ * (unrecognized keys, missing required fields, stale references, etc.)
+ * BEFORE the gateway starts processing user requests.
+ *
+ * Scheduled at 10s post-start (before model-apply at 20s) so the config
+ * is sanitized before any agent runs.
+ */
+function scheduleDoctorFix(config, containerName, sendLog) {
+  if (config.method !== 'docker') return;
+
+  setTimeout(() => {
+    sendLog(`[SYSTEM] Running OpenClaw doctor --fix to validate config...`);
+    const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+    const result = require('child_process').spawnSync(
+      runnerCmd, ['exec', containerName, 'openclaw', 'doctor', '--fix'],
+      { encoding: 'utf8', timeout: 30000 }
+    );
+    if (result.status === 0) {
+      sendLog(`[SUCCESS] OpenClaw doctor: config validated OK`);
+    } else {
+      sendLog(`[WARN] OpenClaw doctor: ${(result.stdout || result.stderr || '').slice(0, 500)}`);
+    }
+  }, 10000);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -335,11 +507,11 @@ function scheduleModelApply(config, containerName, sendLog) {
  * Called by processManager for every stdout chunk — runner owns the logic.
  */
 function detectReadiness(text, config) {
-  // [browser/server] line is the definitive readiness signal for OpenClaw.
-  // Dashboard is always served on the GATEWAY port (config.port || 18789),
-  // not on the browser/server's own port (e.g. 18791).
-  const m = text.match(/\[browser\/server\].*listening on https?:\/\/[\d.]+:(\d+)/i);
-  if (!m) return null;
+  // The [browser/server] line or [gateway] ready line is the definitive readiness signal.
+  const mBrowser = text.match(/\[browser\/server\].*listening on https?:\/\/[\d.]+:(\d+)/i);
+  const mGateway = text.match(/\[gateway\] ready \(/i);
+  
+  if (!mBrowser && !mGateway) return null;
 
   const gatewayPort = config.port || 18789;
   const token = readOpenClawToken();
@@ -370,7 +542,9 @@ module.exports = {
   prepareDockerScript,
   startPairingWatcher,
   scheduleModelApply,
+  scheduleDoctorFix,
   startReadyPoller,
   detectReadiness,
   getFallbackPollerConfig,
+  safeWriteOpenClawConfig,
 };

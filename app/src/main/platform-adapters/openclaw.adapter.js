@@ -5,6 +5,8 @@ const os = require('os');
 const log = require('../logger');
 const { spawn } = require('child_process');
 const { prepareConfigForDocker, prepareConfigForNpm, stopPlatform } = require('../processManager');
+const { safeWriteOpenClawConfig } = require('../runners/openclaw.runner');
+const { syncCodexAuthProfile } = require('../openclawCodexAuth');
 
 const channelLoginProcs = new Map();
 const GATEWAY_LOGIN_CHANNELS = new Set(['web', 'whatsapp', 'zalouser']);
@@ -18,6 +20,66 @@ const CHANNEL_TOKENS = [
   { tokenKey: 'MSTEAMS_BOT_TOKEN',  channel: 'msteams'  },
   { tokenKey: 'TWITCH_TOKEN',       channel: 'twitch'   },
 ];
+
+const MANAGED_MODEL_PREFIXES = [
+  'litellm/',
+  'deepseek/',
+  'openai/',
+  'openai-codex/',
+  'anthropic/',
+  'gemini/',
+  'groq/',
+  'nvidia_nim/',
+  'openrouter/',
+  'xai/',
+  'together_ai/',
+  'moonshot/',
+  'mistral/',
+];
+
+function stripManagedModelPrefix(model) {
+  if (!model || typeof model !== 'string') return '';
+  const prefix = MANAGED_MODEL_PREFIXES.find(p => model.toLowerCase().startsWith(p));
+  return prefix ? model.slice(prefix.length) : model;
+}
+
+// Recursively strips all known provider prefixes until only the bare model name remains.
+// e.g. 'openai-codex/openai/gpt-5.4' → 'gpt-5.4'
+function stripAllManagedPrefixes(model) {
+  if (!model || typeof model !== 'string') return '';
+  let result = model;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const prefix = MANAGED_MODEL_PREFIXES.find(p => result.toLowerCase().startsWith(p));
+    if (prefix) { result = result.slice(prefix.length); changed = true; }
+  }
+  return result;
+}
+
+function pruneManagedModelState(existing, activeProvider, activeModel) {
+  if (!existing || !activeProvider) return;
+
+  const keepLiteLLM = activeProvider === 'custom' || activeProvider === 'deepseek' || activeProvider === 'nvidia';
+  if (!keepLiteLLM && existing.models?.providers?.litellm) {
+    delete existing.models.providers.litellm;
+    if (Object.keys(existing.models.providers).length === 0) delete existing.models.providers;
+    if (Object.keys(existing.models).length === 0) delete existing.models;
+  }
+
+  if (existing.plugins?.entries && !keepLiteLLM) {
+    delete existing.plugins.entries.deepseek;
+    delete existing.plugins.entries.litellm;
+  }
+
+  const modelMap = existing.agents?.defaults?.models;
+  if (modelMap && typeof modelMap === 'object' && !Array.isArray(modelMap)) {
+    for (const key of Object.keys(modelMap)) {
+      const isManaged = MANAGED_MODEL_PREFIXES.some(prefix => key.toLowerCase().startsWith(prefix));
+      if (isManaged && key !== activeModel) delete modelMap[key];
+    }
+  }
+}
 
 async function isPortOpen(port, timeoutMs = 2000) {
   const tryHost = (host) => {
@@ -75,7 +137,7 @@ const OpenClawAdapter = {
     const configPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
     try {
       if (fs.existsSync(configPath)) {
-        const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''));
         const modelPrimary = cfg.agents?.defaults?.model;
         return {
           success: true,
@@ -90,14 +152,14 @@ const OpenClawAdapter = {
     }
   },
 
-  writeConfig: ({ env, envToRemove, model, customProxyTarget, channelConfig, cwd }) => {
+  writeConfig: ({ env, envToRemove, model, oauthTokens, customProxyTarget, channelConfig, cwd }) => {
     const openclawDir = path.join(os.homedir(), '.openclaw');
     if (!fs.existsSync(openclawDir)) fs.mkdirSync(openclawDir, { recursive: true });
     const configPath = path.join(openclawDir, 'openclaw.json');
     try {
       let existing = {};
       if (fs.existsSync(configPath)) {
-        existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        existing = JSON.parse(fs.readFileSync(configPath, 'utf8').replace(/^\uFEFF/, ''));
       }
 
       existing.env = { ...(existing.env || {}), ...env };
@@ -124,9 +186,14 @@ const OpenClawAdapter = {
       if (!existing.gateway) existing.gateway = {};
       if (!existing.gateway.mode) existing.gateway.mode = 'local';
 
+      if (env['CLAWEXPRESS_PROVIDER'] === 'codex') {
+        syncCodexAuthProfile(openclawDir, env, oauthTokens);
+      }
+
       if (customProxyTarget) {
         const baseUrl = env['OPENAI_BASE_URL'];
         const apiKey  = env['OPENAI_API_KEY'];
+        pruneManagedModelState(existing, 'custom', null);
         existing.models = existing.models || {};
         existing.models.providers = existing.models.providers || {};
         existing.models.providers.litellm = {
@@ -137,20 +204,25 @@ const OpenClawAdapter = {
         };
         existing.agents = existing.agents || {};
         existing.agents.defaults = existing.agents.defaults || {};
-        existing.agents.defaults.model = `litellm/${customProxyTarget}`;
+        // Always write model as { primary: "..." } object — OpenClaw 2026 schema requires this format
+        existing.agents.defaults.model = { primary: `litellm/${customProxyTarget}` };
       } else if (model) {
-        if (existing.models?.providers?.litellm) {
-          const litellmModels = existing.models.providers.litellm.models;
-          if (Array.isArray(litellmModels) && litellmModels.some(m => m.name === 'Custom Model')) {
-            delete existing.models.providers.litellm;
-          }
-        }
         existing.agents = existing.agents || {};
         existing.agents.defaults = existing.agents.defaults || {};
         
         let finalModelString = model;
-        if (env['NVIDIA_API_KEY'] && !finalModelString.startsWith('nvidia_nim/')) {
-          finalModelString = `nvidia_nim/${model}`;
+        if (env['CLAWEXPRESS_PROVIDER'] === 'nvidia' && env['NVIDIA_API_KEY']) {
+          const modelId = stripManagedModelPrefix(model);
+          pruneManagedModelState(existing, 'nvidia', `litellm/${modelId}`);
+          existing.models = existing.models || {};
+          existing.models.providers = existing.models.providers || {};
+          existing.models.providers.litellm = {
+            baseUrl: 'https://integrate.api.nvidia.com/v1',
+            apiKey: '${NVIDIA_API_KEY}',
+            api: 'openai-completions',
+            models: [{ id: modelId, name: 'Nvidia NIM Model', input: ['text'], contextWindow: 128000, maxTokens: 8192 }]
+          };
+          finalModelString = `litellm/${modelId}`;
         } else if (env['GROQ_API_KEY'] && !finalModelString.startsWith('groq/')) {
           finalModelString = `groq/${model}`;
         } else if (env['XAI_API_KEY'] && !finalModelString.startsWith('xai/')) {
@@ -161,8 +233,9 @@ const OpenClawAdapter = {
           finalModelString = `anthropic/${model}`;
         } else if (env['GEMINI_API_KEY'] && !finalModelString.startsWith('gemini/')) {
           finalModelString = `gemini/${model}`;
-        } else if (env['DEEPSEEK_API_KEY']) {
-          const modelId = model.replace('deepseek/', '');
+        } else if (env['CLAWEXPRESS_PROVIDER'] === 'deepseek' && env['DEEPSEEK_API_KEY']) {
+          const modelId = stripManagedModelPrefix(model);
+          pruneManagedModelState(existing, 'deepseek', `litellm/${modelId}`);
           existing.models = existing.models || {};
           existing.models.providers = existing.models.providers || {};
           existing.models.providers.litellm = {
@@ -178,19 +251,29 @@ const OpenClawAdapter = {
           finalModelString = `moonshot/${model}`;
         } else if (env['MISTRAL_API_KEY'] && !finalModelString.startsWith('mistral/')) {
           finalModelString = `mistral/${model}`;
-        } else if (env['CLAWEXPRESS_PROVIDER'] === 'codex' && !finalModelString.includes('/')) {
-          finalModelString = `openai-codex/${model}`;
+        } else if (env['CLAWEXPRESS_PROVIDER'] === 'codex') {
+          // OpenClaw Codex OAuth format: 'openai-codex/<bare-model>'
+          // e.g. 'openai-codex/gpt-5.4' — NOT 'openai-codex/openai/gpt-5.4'
+          finalModelString = `openai-codex/${stripAllManagedPrefixes(model)}`;
+        } else if (env['CLAWEXPRESS_PROVIDER'] === 'cli_gemini') {
+          // Gemini CLI OAuth: route via google/ prefix, auth handled by auth-profiles.json (type: oauth)
+          finalModelString = `google/${stripAllManagedPrefixes(model)}`;
+          // Sync auth-profiles.json immediately on save
+          syncCodexAuthProfile(path.join(os.homedir(), '.openclaw'), env);
         } else if (env['OPENAI_API_KEY'] && !finalModelString.startsWith('openai/') && !finalModelString.startsWith('openai-codex/') && !customProxyTarget) {
           finalModelString = `openai/${model}`;
         }
-        existing.agents.defaults.model = finalModelString;
+        pruneManagedModelState(existing, env['CLAWEXPRESS_PROVIDER'], finalModelString);
+        // Always write model as { primary: "..." } object — OpenClaw 2026 schema requires this format
+        existing.agents.defaults.model = { primary: finalModelString };
       }
 
       if (cwd && existing.agents?.defaults?.model) {
-        fs.writeFileSync(path.join(cwd, '.chosen-model'), existing.agents.defaults.model, 'utf8');
+        const modelStr = typeof existing.agents.defaults.model === 'object' ? existing.agents.defaults.model.primary : existing.agents.defaults.model;
+        fs.writeFileSync(path.join(cwd, '.chosen-model'), modelStr, 'utf8');
       }
 
-      fs.writeFileSync(configPath, JSON.stringify(existing, null, 2), 'utf8');
+      safeWriteOpenClawConfig(configPath, JSON.stringify(existing, null, 2));
       log.info('[Config] Written to', configPath, '| model:', model || '(unchanged)');
       return { success: true };
     } catch (err) {
@@ -524,8 +607,17 @@ const OpenClawAdapter = {
 
       const llm = config.llm_config || {};
 
-      let providerPrefix = llm.provider || 'openai';
-      if (providerPrefix.toLowerCase() === 'openrouter') providerPrefix = 'openrouter';
+      const selectedProvider = llm.provider || 'openai';
+      let providerPrefix = selectedProvider;
+      let cliAgentRuntimeId = null;
+      if (selectedProvider === 'codex') {
+        providerPrefix = 'openai-codex';
+      } else if (selectedProvider === 'cli_gemini') {
+        // Gemini CLI OAuth: canonical model prefix is 'google/'
+        providerPrefix = 'google';
+      } else if (selectedProvider === 'openrouter') {
+        providerPrefix = 'openrouter';
+      }
 
       const rawModel = llm.model || '';
       const isOpenRouter = providerPrefix === 'openrouter';
@@ -539,7 +631,7 @@ const OpenClawAdapter = {
 
       const dynamicEnv = config.env || {};
       if (llm.provider && llm.key) {
-        const envKey = `${llm.provider.toUpperCase()}_API_KEY`;
+        const envKey = llm.provider === 'codex' ? 'OPENAI_CODEX_API_KEY' : `${llm.provider.toUpperCase()}_API_KEY`;
         dynamicEnv[envKey] = llm.key;
         if (llm.baseUrl) {
           dynamicEnv[`${llm.provider.toUpperCase()}_BASE_URL`] = llm.baseUrl;
@@ -559,6 +651,12 @@ const OpenClawAdapter = {
       existing.gateway.auth = existing.gateway.auth || { mode: 'token' };
       
       existing.env = { ...(existing.env || {}), ...dynamicEnv };
+      
+      if (llm.provider === 'codex') {
+        const { syncCodexAuthProfile } = require('../openclawCodexAuth');
+        syncCodexAuthProfile(openclawDir, existing.env, llm.oauthTokens);
+      }
+
       existing.agents = existing.agents || {};
       existing.agents.defaults = existing.agents.defaults || {};
       existing.agents.defaults.model = { primary: modelFull };
@@ -573,8 +671,11 @@ const OpenClawAdapter = {
         telegram: { enabled: Array.isArray(config.channels) && config.channels.includes('telegram') },
         discord:  { enabled: Array.isArray(config.channels) && config.channels.includes('discord') },
       };
+      pruneManagedModelState(existing, selectedProvider, existing.agents.defaults.model.primary);
+
 
       if (llm.provider === 'custom' || llm.baseUrl) {
+        pruneManagedModelState(existing, 'custom', null);
         existing.models = existing.models || {};
         existing.models.providers = existing.models.providers || {};
         existing.models.providers.litellm = {
@@ -586,6 +687,7 @@ const OpenClawAdapter = {
         existing.agents.defaults.model.primary = `litellm/${rawModel.replace(/^(openai|litellm)\//i, '')}`;
       } else if (llm.provider === 'deepseek') {
         const modelId = modelFull.replace('deepseek/', '');
+        pruneManagedModelState(existing, 'deepseek', `litellm/${modelId}`);
         existing.models = existing.models || {};
         existing.models.providers = existing.models.providers || {};
         existing.models.providers.litellm = {
@@ -598,7 +700,7 @@ const OpenClawAdapter = {
       }
 
       sendLog(`[INFO] Config model: ${existing.agents.defaults.model.primary}`);
-      fs.writeFileSync(configPath, JSON.stringify(existing, null, 2));
+      safeWriteOpenClawConfig(configPath, JSON.stringify(existing, null, 2));
       fs.writeFileSync(path.join(writeDir, '.chosen-model'), assembledModel);
       sendLog(`[SUCCESS] Configuration written to ${configPath}. Chosen model saved: ${assembledModel}`);
     } catch (err) {

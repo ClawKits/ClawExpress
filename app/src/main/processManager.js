@@ -252,7 +252,7 @@ async function spawnPlatform(platformId, config, webContents) {
     // ── Post-start hooks ────────────────────────────────────────
     if (useOC) {
       openclawRunner.startPairingWatcher(platformId, child);
-      openclawRunner.scheduleModelApply(config, containerName, sendLog);
+      openclawRunner.scheduleModelApply(config, containerName, sendLog);  // 20s: apply chosen model
     } else if (runner === openfangRunner && typeof openfangRunner.scheduleVersionCheck === 'function') {
       const win = BrowserWindow.getAllWindows()[0];
       openfangRunner.scheduleVersionCheck(config, containerName, sendLog, win?.webContents, platformId);
