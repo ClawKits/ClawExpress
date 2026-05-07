@@ -50,7 +50,7 @@ function registerOpenclawUpdaterHandlers() {
 
             let imageExistsLocally = false;
             try {
-              await exec(`docker image inspect ghcr.io/openclaw/openclaw:${targetTag}`, { shell: shellOpt, env: envWithPath });
+              await exec(`docker image inspect ghcr.io/openclaw/openclaw:${targetTag}`, { shell: shellOpt, env: envWithPath, windowsHide: true });
               imageExistsLocally = true;
             } catch (err) {}
 
@@ -59,7 +59,7 @@ function registerOpenclawUpdaterHandlers() {
                 tagToRun = targetTag;
             } else {
                 try {
-                  await exec(`docker image inspect ghcr.io/openclaw/openclaw:latest`, { shell: shellOpt, env: envWithPath });
+                  await exec(`docker image inspect ghcr.io/openclaw/openclaw:latest`, { shell: shellOpt, env: envWithPath, windowsHide: true });
                   tagToRun = 'latest';
                 } catch (err) {}
             }
@@ -67,7 +67,8 @@ function registerOpenclawUpdaterHandlers() {
             if (tagToRun) {
               const { stdout } = await exec(`docker run --rm ghcr.io/openclaw/openclaw:${tagToRun} node openclaw.mjs --version`, { 
                 shell: shellOpt,
-                env: envWithPath
+                env: envWithPath,
+                windowsHide: true
               });
               const match = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
               if (match) current = match[0];
@@ -110,12 +111,12 @@ function registerOpenclawUpdaterHandlers() {
       const envWithPath = { ...process.env, PATH: customPath };
 
       try {
-        const { stdout } = await exec('openclaw --version', { shell: shellOpt, env: envWithPath });
+        const { stdout } = await exec('openclaw --version', { shell: shellOpt, env: envWithPath, windowsHide: true });
         const match = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
         if (match) current = match[0];
       } catch (_) {
         try {
-          const { stdout } = await exec('npx --no-install openclaw --version', { shell: shellOpt, env: envWithPath });
+          const { stdout } = await exec('npx --no-install openclaw --version', { shell: shellOpt, env: envWithPath, windowsHide: true });
           const match2 = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/);
           if (match2) current = match2[0];
         } catch (e2) {
@@ -188,7 +189,8 @@ function registerOpenclawUpdaterHandlers() {
            await new Promise((resolve, reject) => {
              const pullProc = spawn('docker', ['pull', `ghcr.io/openclaw/openclaw:${targetVersion}`], { 
                stdio: ['ignore', 'pipe', 'pipe'],
-               env: envWithPath 
+               env: envWithPath,
+               windowsHide: true
              });
              pullProc.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(line)));
              pullProc.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`)));
@@ -211,7 +213,8 @@ function registerOpenclawUpdaterHandlers() {
                await new Promise((resolve) => {
                  const tagProc = spawn('docker', ['tag', `ghcr.io/openclaw/openclaw:${targetVersion}`, `ghcr.io/openclaw/openclaw:latest`], { 
                    stdio: ['ignore', 'pipe', 'pipe'],
-                   env: envWithPath 
+                   env: envWithPath,
+                   windowsHide: true
                  });
                  tagProc.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(line)));
                  tagProc.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`)));
@@ -233,7 +236,7 @@ function registerOpenclawUpdaterHandlers() {
       // 1. Snapshot current version
       let currentVersion = 'unknown';
       try {
-        const { stdout } = await exec('openclaw --version', { shell: shellOpt, env: envWithPath });
+        const { stdout } = await exec('openclaw --version', { shell: shellOpt, env: envWithPath, windowsHide: true });
         currentVersion = stdout.trim().match(/\d+\.\d+\.\d+(?:-\w+)?/)?.[0] || 'unknown';
       } catch (_) {}
 
@@ -252,7 +255,7 @@ function registerOpenclawUpdaterHandlers() {
       log.info(`[Updater] Installing openclaw@${targetVersion}...`);
       sendLog(`[SYSTEM] Installing openclaw@${targetVersion}...`);
       await new Promise((resolve, reject) => {
-        const installProcess = spawn('npm', ['install', '-g', `openclaw@${targetVersion}`], { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: envWithPath });
+        const installProcess = spawn('npm', ['install', '-g', `openclaw@${targetVersion}`], { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: envWithPath, windowsHide: true });
         installProcess.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(line)));
         installProcess.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(line => sendLog(`[WARN] ${line}`)));
         installProcess.on('close', code => {
@@ -264,12 +267,12 @@ function registerOpenclawUpdaterHandlers() {
 
       // 3. Health check — auto-rollback if new version is broken
       try {
-        await exec('openclaw --version', { shell: shellOpt, env: envWithPath });
+        await exec('openclaw --version', { shell: shellOpt, env: envWithPath, windowsHide: true });
       } catch (_) {
         log.error('[Updater] Health check failed after installation! Rolling back binary...');
         if (currentVersion !== 'unknown') {
           await new Promise((resolve) => {
-            const revertProc = spawn('npm', ['install', '-g', `openclaw@${currentVersion}`], { shell: true, stdio: 'ignore', env: envWithPath });
+            const revertProc = spawn('npm', ['install', '-g', `openclaw@${currentVersion}`], { shell: true, stdio: 'ignore', env: envWithPath, windowsHide: true });
             revertProc.on('close', () => resolve());
             revertProc.on('error', () => resolve());
           });

@@ -1,0 +1,106 @@
+{
+  "id": "zeroclaw",
+  "name": "ZeroClaw",
+  "version": "ghcr.io/zeroclaw-labs/zeroclaw:latest",
+  "author": "zeroclaw-labs",
+  "description": "A local AI runtime with a built-in web dashboard — chat, memory browsing, config editing, cron management, and tool inspection. Runs as a single Docker container on your machine.",
+  "method": ["docker"],
+  "port": 42617,
+  "verified": true,
+  "updatable": true,
+
+  "dirs": {
+    "cwd": "userData",
+    "wipeOnUninstall": [],
+    "volumes": []
+  },
+
+  "install": {
+    "docker": {
+      "type": "compose",
+      "templateFiles": ["docker-compose.yml"],
+      "shellService": "zeroclaw"
+    }
+  },
+
+  "installScript": {
+    "docker": ["docker", "build", "-t", "clawexpress/zeroclaw:local", "https://github.com/zeroclaw-labs/zeroclaw.git"]
+  },
+
+  "start": {
+    "docker": ["docker", "compose", "up", "-d"]
+  },
+
+  "stop": {
+    "docker": ["docker", "compose", "down"]
+  },
+
+  "readiness": {
+    "logPatterns": [
+      "listening on.*:42617",
+      "gateway.*started",
+      "zeroclaw.*ready",
+      "ready"
+    ],
+    "http": {
+      "path": "/",
+      "port": 42617,
+      "retries": 45
+    }
+  },
+
+  "configSchema": [
+    {
+      "id": "llm_config",
+      "type": "llm-key-picker",
+      "label": "LLM Provider",
+      "description": "Select an LLM provider key. The credential is injected into ZeroClaw's config.toml and .env so it can reach your chosen model.",
+      "required": true
+    }
+  ],
+
+  "configFiles": {
+    "docker-compose.yml": {
+      "type": "template"
+    },
+    "Dockerfile": {
+      "type": "template"
+    },
+    ".env": {
+      "type": "dotenv",
+      "mappings": [
+        { "field": "llm_config", "type": "llm-provider-key" }
+      ]
+    },
+    "data/.zeroclaw/config.toml": {
+      "type": "toml",
+      "mappings": [
+        {
+          "field": "llm_config",
+          "type": "llm-model-config",
+          "format": "zeroclaw-v2",
+          "modelKey": "model",
+          "autoResolve": true,
+          "providerSectionOverrides": {
+            "anthropic": "anthropic",
+            "openai": "openai",
+            "openrouter": "openrouter",
+            "google": "gemini",
+            "groq": "groq",
+            "mistral": "mistral",
+            "ollama": "ollama",
+            "deepseek": "custom:https://api.deepseek.com",
+            "xai": "custom:https://api.x.ai"
+          }
+        }
+      ]
+    }
+  },
+
+  "schema": {
+    "features": ["ai_engine_setup", "custom_env"],
+    "fields": [
+      { "key": "port", "label": "UI Port", "type": "number", "placeholder": "42617" }
+    ]
+  }
+}

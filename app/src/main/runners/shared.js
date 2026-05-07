@@ -60,11 +60,23 @@ function startReadyPoller({ platformId, requireToken = false, readToken, port, s
       }
     }
 
+    let settled = false;
     const req = http.get(`http://127.0.0.1:${port}/`, () => {
+      if (settled) return;
+      settled = true;
       notifyReady(token);
     });
-    req.on('error', () => setTimeout(poll, intervalMs));
-    req.setTimeout(1200, () => { req.destroy(); setTimeout(poll, intervalMs); });
+    req.on('error', () => {
+      if (settled) return;
+      settled = true;
+      setTimeout(poll, intervalMs);
+    });
+    req.setTimeout(1200, () => {
+      if (settled) return;
+      settled = true;
+      req.destroy();
+      setTimeout(poll, intervalMs);
+    });
   };
 
   poll();

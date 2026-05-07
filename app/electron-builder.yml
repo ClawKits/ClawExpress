@@ -4,7 +4,7 @@ productName: ClawExpress
 nativeRebuilder: "legacy"
 
 extraMetadata:
-  version: "0.1.20"
+  version: "0.1.21"
 
 # Output directory for build artifacts (relative to `app/`)
 directories:
@@ -69,6 +69,7 @@ linux:
   icon: public/logo.png
   category: Development
   maintainer: ClawKits <hello@clawexpress.com>
+
 
 
 

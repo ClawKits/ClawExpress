@@ -497,7 +497,7 @@ const InstallModal = ({ isOpen, onClose, platform, onInstalled }) => {
               <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Working...</span>
             ) : (
               <div style={{ display: 'flex', gap: '8px', width: '100%', justifyContent: 'flex-end' }}>
-                <button className={styles.btnPrimary} onClick={onClose} style={{ background: 'var(--text-primary)', color: 'var(--bg-card)' }}>Close</button>
+                <button className={styles.btnSecondary} onClick={onClose}>Close</button>
               </div>
             )
           ) : step === 5 ? (

@@ -21,6 +21,7 @@
   animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* ── Header ── */
 .header {
   padding: 20px 24px;
   border-bottom: 1px solid var(--border);
@@ -70,6 +71,7 @@
   background: rgba(255,255,255,0.05);
 }
 
+/* ── Toolbar ── */
 .toolbar {
   padding: 10px 24px;
   border-bottom: 1px solid var(--border);
@@ -121,8 +123,26 @@
   border-color: rgba(34,197,94,0.5);
 }
 
-.terminal {
+/* ── Content area: wraps log + shell for overlay support ── */
+.contentArea {
   flex: 1;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Log area + output panel wrapper ── */
+.terminalWrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.terminal {
+  height: 100%;
   overflow-y: auto;
   padding: 20px 24px;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
@@ -143,11 +163,11 @@
 
 .logText { flex: 1; word-break: break-all; }
 
-.logInfo { color: #9ca3af; }
+.logInfo    { color: #9ca3af; }
 .logSuccess { color: #22c55e; }
-.logWarn { color: #f59e0b; }
-.logError { color: #ef4444; }
-.logSystem { color: #6366f1; }
+.logWarn    { color: #f59e0b; }
+.logError   { color: #ef4444; }
+.logSystem  { color: #6366f1; }
 
 .cursor {
   display: inline-block;
@@ -159,43 +179,285 @@
   animation: blink 1s step-end infinite;
 }
 
-.footer {
-  padding: 12px 24px;
-  border-top: 1px solid var(--border);
+/* ── Floating output panel ── */
+.outputPanel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 45%;
+  background: #0f0f0f;
+  border-top: 1px solid rgba(245,158,11,0.3);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  animation: slideUp 0.2s ease;
+}
+
+.size_max {
+  height: 100%;
+  top: 0;
+  border-top: none;
+  border-bottom: 1px solid rgba(245,158,11,0.3);
+}
+
+.size_min {
+  height: auto;
+}
+
+.outputPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(245,158,11,0.06);
+  border-bottom: 1px solid rgba(245,158,11,0.15);
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.outputPanelTitle {
+  font-size: 11px;
+  font-weight: 500;
+  color: #f59e0b;
+  display: flex;
+  align-items: center;
+}
+
+.outputPanelControls {
+  display: flex;
+  gap: 4px;
+}
+
+.panelCtrlBtn {
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  transition: all 0.15s;
+}
+
+.panelCtrlBtn:hover {
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.06);
+}
+
+.panelCtrlClose:hover {
+  color: #ef4444;
+}
+
+.outputPanelBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  min-height: 0;
+}
+
+.outputLoading {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
-}
-
-.prompt {
-  color: #22c55e;
-  font-family: monospace;
+  color: #6b7280;
   font-size: 12px;
-  flex-shrink: 0;
 }
 
-.input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text-primary);
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+.outputContent {
+  margin: 0;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
+  line-height: 1.6;
+  color: #d1d5db;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
+/* ── xterm.js shell wrapper ── */
+/* ── Shell wrapper base + size variants ── */
+.shellWrapper {
+  display: flex;
+  flex-direction: column;
+  background: #0f0f0f;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+}
+
+/* default: 220px dưới cùng content area */
+.shell_normal {
+  flex-shrink: 0;
+  height: 220px;
+}
+
+/* ^ chiếm toàn bộ content area, overlay log */
+.shell_console {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  border-top: none;
+}
+
+/* <--> 80% màn hình, floating */
+.shell_fullscreen {
+  position: fixed;
+  top: 10vh;
+  left: 10vw;
+  width: 80vw;
+  height: 80vh;
+  z-index: 1000;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.7);
+}
+
+
+.shellLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px 3px 10px;
+  font-size: 10px;
+  color: #374151;
+  background: #0a0a0a;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  flex-shrink: 0;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  letter-spacing: 0.3px;
+  height: 28px;
+  box-sizing: border-box;
+}
+
+.shellControls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.shellCtrlBtn {
+  background: transparent;
+  border: none;
+  color: #4b5563;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.shellCtrlBtn:hover {
+  color: #9ca3af;
+  background: rgba(255,255,255,0.05);
+}
+
+.shellCtrlSep {
+  margin-left: 4px;
+  border-left: 1px solid rgba(255,255,255,0.06);
+  padding-left: 7px;
+}
+
+/* ── Quick Actions bar ── */
+.actionsBar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  background: #0a0a0a;
+}
+
+.actionsBtn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: 1px solid rgba(245,158,11,0.3);
+  color: #f59e0b;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font-primary);
+  transition: all 0.2s;
+}
+
+.actionsBtn:hover:not(:disabled) {
+  background: rgba(245,158,11,0.07);
+  border-color: rgba(245,158,11,0.5);
+}
+
+.actionsBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.actionsDropdown {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 12px;
+  background: #141414;
+  border: 1px solid rgba(245,158,11,0.25);
+  border-radius: 6px;
+  min-width: 160px;
+  padding: 4px;
+  z-index: 20;
+  animation: fadeIn 0.12s ease;
+}
+
+.actionItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 7px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-primary);
+  text-align: left;
+  transition: all 0.15s;
+}
+
+.actionItem:hover {
+  background: rgba(245,158,11,0.07);
+  color: var(--text-primary);
+}
+
+/* ── Animations ── */
 @keyframes slideIn {
   from { transform: translateX(100%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
 }
 
 @keyframes fadeIn {
   from { opacity: 0; }
-  to { opacity: 1; }
+  to   { opacity: 1; }
 }
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
+  50%       { opacity: 0; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }

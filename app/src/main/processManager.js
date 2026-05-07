@@ -20,11 +20,13 @@ const path                   = require('path');
 const fs                     = require('fs');
 const os                     = require('os');
 const { app, BrowserWindow } = require('electron');
-const log                    = require('./logger');
+
 
 const openclawRunner  = require('./runners/openclaw.runner');
 const openfangRunner  = require('./runners/openfang.runner');
+const genericRunner   = require('./runners/generic.runner');
 const defaultRunner   = require('./runners/default.runner');
+const { getManifest } = require('./manifestRegistry');
 
 const runningProcesses = new Map();
 
@@ -45,9 +47,10 @@ function resolveRunner(platformId, config) {
     config.registryId === 'openfang' ||
     config.name?.toLowerCase().includes('openfang')
   ) return openfangRunner;
-  // Add more dedicated runners here:
-  // if (config.registryId === 'n8n') return require('./runners/n8n.runner');
-  return defaultRunner;  // generic fallback — HTTP poll on config.port
+  // Manifest-backed platforms (hermes + any future platform) use the generic runner.
+  // Platforms with no manifest fall back to defaultRunner (HTTP poll on config.port).
+  const id = config.registryId || platformId || '';
+  return getManifest(id) ? genericRunner : defaultRunner;
 }
 
 // ── spawnPlatform ─────────────────────────────────────────────────────────────
@@ -74,7 +77,7 @@ async function spawnPlatform(platformId, config, webContents) {
 
     if (config.method === 'docker') {
       try {
-        execSync(`${runnerCmd} info`, { stdio: 'ignore' });
+        execSync(`${runnerCmd} info`, { stdio: 'ignore', windowsHide: true });
       } catch {
         sendLog(`[SYSTEM] ERROR: ${runnerCmd} is not running or not installed! Please start Docker/Podman first.`);
         return { success: false, reason: 'DOCKER_NOT_RUNNING' };
@@ -82,7 +85,7 @@ async function spawnPlatform(platformId, config, webContents) {
     } else if (useOC) {
       // Only require openclaw CLI when it's the OpenClaw platform in NPM mode.
       try {
-        execSync('openclaw --version', { shell: isWin ? 'cmd.exe' : '/bin/bash', stdio: 'ignore' });
+        execSync('openclaw --version', { shell: isWin ? 'cmd.exe' : '/bin/bash', stdio: 'ignore', windowsHide: true });
       } catch {
         sendLog('[SYSTEM] ERROR: openclaw CLI is missing or not in PATH! Please install it via NPM first.');
         return { success: false, reason: 'NPM_MISSING_DEPENDENCY' };
@@ -99,16 +102,16 @@ async function spawnPlatform(platformId, config, webContents) {
     });
 
     // ── Per-method script preparation ─────────────────────────────────────────
+    const manifestForPlatform = getManifest(config.registryId || platformId);
+    const isComposePlatform   = manifestForPlatform?.install?.docker?.type === 'compose';
+
     if (config.method === 'docker') {
-      if (platformId === 'openfang' || config.registryId === 'openfang') {
-        const exists = require('child_process').spawnSync(runnerCmd, ['ps', '-a', '-q', '-f', `name=^/${containerName}$`]).stdout.toString().trim();
-        if (exists) {
-          sendLog('[SYSTEM] Saving OpenFang container state (dependencies/hands)...');
-          require('child_process').spawnSync(runnerCmd, ['commit', containerName, 'openfang-custom:latest']);
-        }
+      // Compose-type platforms (e.g. hermes) manage their own lifecycle via
+      // `docker compose up/down` — skip the single-container zombie cleanup.
+      if (!isComposePlatform) {
+        sendLog('[SYSTEM] Running zombie cleanup...');
+        require('child_process').spawnSync(runnerCmd, ['rm', '-f', containerName], { windowsHide: true });
       }
-      sendLog('[SYSTEM] Running zombie cleanup...');
-      require('child_process').spawnSync(runnerCmd, ['rm', '-f', containerName]);
 
       if (useOC) {
         // Also free the gateway port on the HOST so OpenClaw always binds to
@@ -119,7 +122,7 @@ async function spawnPlatform(platformId, config, webContents) {
 
         scriptArr = openclawRunner.prepareDockerScript(scriptArr, config, containerName);
       } else {
-        scriptArr = defaultRunner.prepareDockerScript(scriptArr, config, containerName);
+        scriptArr = runner.prepareDockerScript(scriptArr, config, containerName);
       }
 
     } else if (config.method === 'npm') {
@@ -175,6 +178,7 @@ async function spawnPlatform(platformId, config, webContents) {
     child = spawn(spawnArgs[0], spawnArgs[1], {
       cwd: config.cwd || app.getPath('home'),
       env: spawnEnv,
+      windowsHide: true,
     });
 
     sendLog(`[SYSTEM] Process started (PID: ${child.pid})`);
@@ -206,24 +210,27 @@ async function spawnPlatform(platformId, config, webContents) {
       }
     });
 
-    // Fallback: if detectReadiness never fires (silent attach / already-running),
-    // start the HTTP poller using runner-provided config after a grace period.
-    const fallbackDelay = config.method === 'npm' ? 8000 : 20000;
-    setTimeout(() => {
-      if (pollerStarted || gatewayReadyEmitted) return;
-      const pollerConfig = runner.getFallbackPollerConfig(config);
-      sendLog(`[SYSTEM] Fallback: polling dashboard on port ${pollerConfig.port}...`);
-      pollerStarted = true;
-      runner.startReadyPoller({
-        platformId,
-        port:         pollerConfig.port,
-        requireToken: pollerConfig.requireToken,
-        readToken:    pollerConfig.readToken,
-        sendLog,
-        maxRetries:   45,
-        intervalMs:   1500,
-      });
-    }, fallbackDelay);
+    // Fallback timer: only for non-compose platforms.
+    // Compose platforms rely on the exit-code-0 signal from `docker compose up -d`
+    // which already waits for depends_on healthchecks — that's the reliable trigger.
+    if (!isComposePlatform) {
+      const fallbackDelay = config.method === 'npm' ? 8000 : 20000;
+      setTimeout(() => {
+        if (pollerStarted || gatewayReadyEmitted) return;
+        const pollerConfig = runner.getFallbackPollerConfig(config);
+        sendLog(`[SYSTEM] Fallback: polling dashboard on port ${pollerConfig.port}...`);
+        pollerStarted = true;
+        runner.startReadyPoller({
+          platformId,
+          port:         pollerConfig.port,
+          requireToken: pollerConfig.requireToken,
+          readToken:    pollerConfig.readToken,
+          sendLog,
+          maxRetries:   45,
+          intervalMs:   1500,
+        });
+      }, fallbackDelay);
+    }
 
     child.stderr.on('data', (data) => {
       const text = data.toString();
@@ -238,6 +245,31 @@ async function spawnPlatform(platformId, config, webContents) {
 
     child.on('exit', (code) => {
       sendLog(`[SYSTEM] Process exited with code ${code}`);
+
+      // For compose platforms, `docker compose up -d` exits after starting containers.
+      // Exit 0 = success. Non-zero can still mean containers are up (e.g. healthcheck
+      // timeout on a slow machine) so we always try polling rather than giving up.
+      if (isComposePlatform && !pollerStarted) {
+        if (code !== 0) {
+          sendLog(`[WARN] Compose exited with code ${code} — containers may still be starting. Polling anyway...`);
+        } else {
+          sendLog('[SYSTEM] Compose stack started. Containers are running.');
+        }
+        const pollerConfig = runner.getFallbackPollerConfig(config);
+        sendLog(`[SYSTEM] Polling dashboard on port ${pollerConfig.port}...`);
+        pollerStarted = true;
+        runner.startReadyPoller({
+          platformId,
+          port:         pollerConfig.port,
+          requireToken: pollerConfig.requireToken,
+          readToken:    pollerConfig.readToken,
+          sendLog,
+          maxRetries:   90,
+          intervalMs:   2000,
+        });
+        return;
+      }
+
       runningProcesses.delete(platformId);
       if (!pollerStarted) {
         const win = BrowserWindow.getAllWindows()[0];
@@ -268,12 +300,9 @@ async function spawnPlatform(platformId, config, webContents) {
 
 // ── stopPlatform ──────────────────────────────────────────────────────────────
 
-async function stopPlatform(platformId, webContents, method, container) {
+async function stopPlatform(platformId, webContents, method, container, registryId = '', cwd = null) {
   const entry = runningProcesses.get(platformId);
   const isWin = process.platform === 'win32';
-  const util = require('util');
-  const execAsync = util.promisify(require('child_process').exec);
-
   const sendLog = (msg) => {
     if (webContents && !webContents.isDestroyed()) {
       webContents.send('platform-log', { platformId, msg });
@@ -283,46 +312,84 @@ async function stopPlatform(platformId, webContents, method, container) {
   try {
     if (method === 'docker') {
       const containerName = container || `${platformId}-clawexpress`;
-      const isOpenfang = platformId === 'openfang' ||
+      const isOpenfang = registryId === 'openfang' || platformId === 'openfang' ||
         (entry && entry.process.spawnargs && entry.process.spawnargs.join(' ').includes('openfang'));
+      const { getManifest } = require('./manifestRegistry');
+      const manifest = getManifest(registryId || platformId);
+      const isCompose = manifest?.install?.docker?.type === 'compose';
 
-      // ── Optimistic UI: mark stopped immediately so user isn't blocked ──────
       runningProcesses.delete(platformId);
-      if (webContents && !webContents.isDestroyed()) {
-        webContents.send('platform-status-change', { platformId, status: 'STOPPING' });
-      }
 
-      // ── Commit + rm in background (non-blocking) ───────────────────────────
+      const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+
+      const sendProgress = (data) => {
+        if (webContents && !webContents.isDestroyed()) {
+          webContents.send('platform-stop-progress', { platformId, ...data });
+        }
+      };
+
       (async () => {
-        const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
-
-        if (isOpenfang) {
-          // Only commit if something was installed since last commit (flag file)
-          const flagCheck = require('child_process').spawnSync(
-            runnerCmd, ['exec', containerName, 'test', '-f', '/tmp/.needs-commit'],
-            { timeout: 3000 }
-          );
-          const needsCommit = flagCheck.status === 0;
-
-          if (needsCommit) {
-            sendLog(`[SYSTEM] Changes detected — saving container state...`);
-            try {
-              await execAsync(`${runnerCmd} commit ${containerName} openfang-custom:latest`, { timeout: 120000 });
-              sendLog(`[SYSTEM] Container state saved.`);
-            } catch (e) {
-              sendLog(`[WARN] Commit failed (state may not be saved): ${e.message}`);
-            }
-          } else {
-            sendLog(`[SYSTEM] No changes detected — skipping commit.`);
+        // ── Compose platforms: bring stack down gracefully ──────────────────
+        if (isCompose && cwd) {
+          if (webContents && !webContents.isDestroyed()) {
+            webContents.send('platform-status-change', { platformId, status: 'STOPPING' });
           }
+          sendProgress({ step: 'stop', status: 'running', msg: 'Bringing compose stack down...' });
+          const { composeProjectName } = require('./runners/generic.runner');
+          const projectName = composeProjectName({ registryId: registryId || platformId });
+          await new Promise((resolve) => {
+            const proc = require('child_process').spawn(
+              runnerCmd, ['compose', '--project-name', projectName, 'down'],
+              { cwd, stdio: 'ignore', windowsHide: true }
+            );
+            proc.on('close', resolve);
+            proc.on('error', resolve);
+            setTimeout(resolve, 60000);
+          });
+          sendProgress({ step: 'stop', status: 'done', msg: 'Stack stopped' });
+          sendProgress({ step: 'complete' });
+          if (webContents && !webContents.isDestroyed()) {
+            webContents.send('platform-status-change', { platformId, status: 'STOPPED' });
+          }
+          return;
         }
 
-        sendLog(`[SYSTEM] Destroying container ${containerName}...`);
-        require('child_process').spawn(runnerCmd, ['rm', '-f', containerName], { detached: true, stdio: 'ignore' });
+        // ── Single-container: stop → commit → rm, non-blocking async ────────
+        const runDockerAsync = (args, timeoutMs = 30000) => new Promise((resolve) => {
+          const p = require('child_process').spawn(runnerCmd, args, { windowsHide: true, stdio: 'ignore' });
+          const t = setTimeout(() => { try { p.kill(); } catch (_) {} resolve(); }, timeoutMs);
+          p.on('close', () => { clearTimeout(t); resolve(); });
+          p.on('error', () => { clearTimeout(t); resolve(); });
+        });
+
+        // 1. Capture container ID before stopping.
+        const idResult = require('child_process').spawnSync(
+          runnerCmd, ['inspect', '--format={{.Id}}', containerName],
+          { windowsHide: true, encoding: 'utf8' }
+        );
+        const containerId = (idResult.stdout || '').trim() || containerName;
+
+        // 2. Stop.
+        sendProgress({ step: 'stop', status: 'running', msg: 'Stopping container...' });
+        await runDockerAsync(['stop', '--time', '8', containerId], 15000);
+        sendProgress({ step: 'stop', status: 'done', msg: 'Container stopped' });
+
+        // 3. Commit (save installed packages into image for next start).
+        const savedImage = isOpenfang ? 'openfang-custom:latest' : `clawexpress-${registryId || platformId}:saved`;
+        sendProgress({ step: 'commit', status: 'running', msg: `Saving state → ${savedImage}` });
+        sendLog(`[SYSTEM] Committing container state: ${savedImage}`);
+        await runDockerAsync(['commit', containerId, savedImage], 120000);
+        sendProgress({ step: 'commit', status: 'done', msg: 'State saved' });
+
+        // 4. Remove — container disappears from Docker Desktop here.
+        sendProgress({ step: 'remove', status: 'running', msg: 'Removing container...' });
+        await runDockerAsync(['rm', '-f', containerId], 10000);
+        sendProgress({ step: 'remove', status: 'done', msg: 'Container removed' });
 
         if (webContents && !webContents.isDestroyed()) {
           webContents.send('platform-status-change', { platformId, status: 'STOPPED' });
         }
+        sendProgress({ step: 'complete' });
       })();
 
       return { success: true };
@@ -332,7 +399,7 @@ async function stopPlatform(platformId, webContents, method, container) {
         const pid = entry.process.pid;
         sendLog(`[SYSTEM] Terminating process tree (PID: ${pid})...`);
         if (isWin) {
-          require('child_process').spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 5000 });
+          require('child_process').spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 5000, windowsHide: true });
         } else {
           try { process.kill(-pid, 'SIGTERM'); } catch (_) { entry.process.kill('SIGTERM'); }
         }
@@ -348,7 +415,7 @@ async function stopPlatform(platformId, webContents, method, container) {
           "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '.*openclaw.*(index\\.js|openclaw\\.mjs).*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
         ], { timeout: 8000, windowsHide: true });
       } else {
-        require('child_process').spawnSync('pkill', ['-f', '.*openclaw.*(index\\.js|openclaw\\.mjs).*'], { timeout: 5000 });
+        require('child_process').spawnSync('pkill', ['-f', '.*openclaw.*(index\\.js|openclaw\\.mjs).*'], { timeout: 5000, windowsHide: true });
       }
 
     } else {

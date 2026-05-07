@@ -23,6 +23,8 @@ const VALID_CHANNELS = [
   'channel-login', 'channel-logout', 'channel-login-cancel', 'channel-check-linked', 'channel-pairing-accept', 'channel-login-success',
   // Embedded terminal (PTY via node-pty)
   'pty-start', 'pty-input', 'pty-resize', 'pty-kill',
+  // Docker quick actions + container listing
+  'quick-action-exec', 'docker-list-containers',
   // Auth Modal
   'open-auth-window',
   // Skills
@@ -34,7 +36,7 @@ const VALID_CHANNELS = [
 ];
 
 const VALID_EVENTS = [
-  'platform-log', 'platform-status-change', 'app-log', 'platform-ready', 'oauth-token-received', 'dependency-log',
+  'platform-log', 'platform-status-change', 'platform-stop-progress', 'app-log', 'platform-ready', 'oauth-token-received', 'dependency-log',
   'config-file-changed', // Added for raw config live reload
   // Updater events (broadcast from main process)
   'updater-event',

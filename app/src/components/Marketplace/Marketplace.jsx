@@ -97,7 +97,7 @@ const Marketplace = ({ onNavigate }) => {
                       <div className={styles.cardFooter}>
                         <div style={{ display: 'flex', gap: '6px' }}>
                           <span className={styles.methodTag}>{platform.method}</span>
-                          {platform.id.includes('openclaw') && <span className={styles.methodTag}>NPM</span>}
+                          {platform.id === 'openclaw' && <span className={styles.methodTag}>NPM</span>}
                         </div>
                         {(() => {
                           if (platforms.some(p => (p.registryId || p.id) === platform.id)) {
@@ -156,7 +156,7 @@ const Marketplace = ({ onNavigate }) => {
                       <div className={styles.cardFooter}>
                         <div style={{ display: 'flex', gap: '6px' }}>
                           <span className={styles.methodTag}>{platform.method}</span>
-                          {platform.id.includes('openclaw') && <span className={styles.methodTag}>NPM</span>}
+                          {platform.id === 'openclaw' && <span className={styles.methodTag}>NPM</span>}
                         </div>
                         {(() => {
                           if (platforms.some(p => (p.registryId || p.id) === platform.id)) {
@@ -192,64 +192,6 @@ const Marketplace = ({ onNavigate }) => {
                 </div>
               </>
             )}
-
-            {/* Upcoming Apps Section */}
-            <div className={styles.sectionLabel}>Upcoming Platforms</div>
-            <div className={styles.grid}>
-              {/* ZeroClaw */}
-              <div className={styles.card} style={{ opacity: 0.5, padding: 0, gap: 0, overflow: 'hidden' }}>
-                  <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <PlatformIcon id="zeroclaw" size={40} />
-                  </div>
-                  <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
-                    <div className={styles.cardHeader}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <div>
-                          <div className={styles.cardName}>
-                            ZeroClaw
-                            <span className={styles.verifiedBadge} style={{ background: 'var(--border)', color: 'var(--text-muted)' }}>COMING SOON</span>
-                          </div>
-                          <div className={styles.cardVersion}>No-code workflows · by ClawKits</div>
-                        </div>
-                      </div>
-                    </div>
-                  <div className={styles.cardDesc}>Visual node-based orchestration engine for building complex AI pathways without coding.</div>
-                  <div className={styles.cardFooter}>
-                    <span className={styles.methodTag}>npm</span>
-                    <button className={styles.installBtn} disabled style={{ backgroundColor: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-                      Not Available
-                    </button>
-                  </div>
-                  </div>
-              </div>
-
-              {/* NanoClaw */}
-              <div className={styles.card} style={{ opacity: 0.5, padding: 0, gap: 0, overflow: 'hidden' }}>
-                  <div style={{ height: '120px', background: 'linear-gradient(145deg, #1f1f1f, #0a0a0a)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <PlatformIcon id="nanoclaw" size={40} />
-                  </div>
-                  <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
-                    <div className={styles.cardHeader}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <div>
-                          <div className={styles.cardName}>
-                            NanoClaw
-                            <span className={styles.verifiedBadge} style={{ background: 'var(--border)', color: 'var(--text-muted)' }}>COMING SOON</span>
-                          </div>
-                          <div className={styles.cardVersion}>Edge compute · by ClawKits</div>
-                        </div>
-                      </div>
-                    </div>
-                  <div className={styles.cardDesc}>Ultra-lightweight edge worker for IoT inference and low-power autonomous deployments.</div>
-                  <div className={styles.cardFooter}>
-                    <span className={styles.methodTag}>binary</span>
-                    <button className={styles.installBtn} disabled style={{ backgroundColor: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-                      Not Available
-                    </button>
-                  </div>
-                  </div>
-              </div>
-            </div>
           </>
         )}
       </div>

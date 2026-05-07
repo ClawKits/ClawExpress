@@ -68,6 +68,30 @@ const EmbeddedTerminal = forwardRef(({ id, command, args = [], env = {}, onExit,
     term.open(containerRef.current);
     fitAddon.fit();
 
+    // Disable IME composition (Unikey, etc.) on the xterm textarea.
+    // Unikey sends composed Vietnamese via compositionend → input event.
+    // We intercept in the capture phase before xterm's own handler sees it.
+    if (term.textarea) {
+      term.textarea.setAttribute('inputmode', 'none');
+      let composing = false;
+      const onCompStart = () => { composing = true; };
+      const onCompEnd   = () => { composing = false; term.textarea.value = ''; };
+      const onInput     = (e) => {
+        if (composing || e.isComposing) {
+          e.stopImmediatePropagation();
+          term.textarea.value = '';
+        }
+      };
+      term.textarea.addEventListener('compositionstart', onCompStart);
+      term.textarea.addEventListener('compositionend',   onCompEnd);
+      term.textarea.addEventListener('input', onInput, { capture: true });
+      cleanupFns.current.push(() => {
+        term.textarea?.removeEventListener('compositionstart', onCompStart);
+        term.textarea?.removeEventListener('compositionend',   onCompEnd);
+        term.textarea?.removeEventListener('input', onInput, { capture: true });
+      });
+    }
+
     if (initialMessages && initialMessages.length > 0) {
       initialMessages.forEach(msg => term.writeln(msg));
     }

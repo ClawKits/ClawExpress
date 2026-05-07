@@ -637,6 +637,12 @@ const OpenClawAdapter = {
           dynamicEnv[`${llm.provider.toUpperCase()}_BASE_URL`] = llm.baseUrl;
         }
       }
+      
+      if (llm.connectionId && llm.provider) {
+        dynamicEnv['CLAWEXPRESS_CONNECTION_ID'] = llm.connectionId;
+        dynamicEnv['CLAWEXPRESS_PROVIDER'] = llm.provider;
+      }
+      
       if (config.telegram_token) dynamicEnv.TELEGRAM_BOT_TOKEN = config.telegram_token;
 
       // Merge into existing config (preserve runtime fields)

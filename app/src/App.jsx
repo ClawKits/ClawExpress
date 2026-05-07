@@ -16,6 +16,7 @@ import { usePlatformStore } from './store/usePlatformStore';
 import useAuthStore from './store/useAuthStore';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import PairingModal from './components/PairingModal/PairingModal';
+import StopProgressModal from './components/StopProgressModal/StopProgressModal';
 import './index.css';
 
 function App() {
@@ -71,6 +72,7 @@ function App() {
       <NpmDependencyModal />
       <UpdateNotification />
       <PairingModal />
+      <StopProgressModal />
     </>
   );
 }

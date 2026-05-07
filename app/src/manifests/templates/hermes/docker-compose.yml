@@ -1,0 +1,74 @@
+services:
+  # Hermes Agent Gateway — core API on port 8642 + Dashboard on port 9119
+  hermes-agent:
+    image: nousresearch/hermes-agent:latest
+    env_file:
+      - .env
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      API_SERVER_KEY: ${API_SERVER_KEY:-}
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_ENABLED: 'true'
+      GATEWAY_ALLOW_ALL_USERS: 'true'
+    # Start dashboard (extended APIs: sessions, skills, config, jobs) in background,
+    # then run the gateway in foreground. Full venv path required inside this image.
+    command:
+      [
+        "bash",
+        "-lc",
+        "/opt/hermes/.venv/bin/hermes dashboard --host 0.0.0.0 --port 9119 --no-open --insecure >/tmp/hermes-dashboard.log 2>&1 & exec /opt/hermes/.venv/bin/hermes gateway run"
+      ]
+    volumes:
+      - claude-data:/opt/data
+      # Inject ClawExpress-managed model config (provider, model, base_url).
+      # Bind mount takes precedence over the volume for this specific file.
+      - ./config.yaml:/opt/data/config.yaml
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:8642/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    ports:
+      - '127.0.0.1:8642:8642'
+
+  # Hermes Workspace UI — web interface on port 3000
+  hermes-workspace:
+    image: ghcr.io/outsourc-e/hermes-workspace:latest
+    depends_on:
+      hermes-agent:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      HERMES_WORKSPACE_DIR: /home/workspace
+      HERMES_API_URL: http://hermes-agent:8642
+      HERMES_API_TOKEN: ${API_SERVER_KEY:-}
+      # Extended APIs — sessions, skills, memory, config, jobs
+      HERMES_DASHBOARD_URL: http://hermes-agent:9119
+      HOST: 0.0.0.0
+      HERMES_PASSWORD: ${HERMES_PASSWORD:-}
+      # Back-compat alias (older images read CLAUDE_PASSWORD)
+      CLAUDE_PASSWORD: ${HERMES_PASSWORD:-}
+      # Cookie & proxy settings — defaults safe for local loopback deployment
+      COOKIE_SECURE: '0'
+      TRUST_PROXY: '1'
+    volumes:
+      - hermes-data:/home/workspace
+      # Dedicated volume so Docker initialises /home/workspace/.hermes with
+      # correct permissions — pty-helper.py os.chdir()s into this path.
+      - hermes-home:/home/workspace/.hermes
+    ports:
+      - '127.0.0.1:3000:3000'
+
+volumes:
+  claude-data:
+  hermes-data:
+  hermes-home:

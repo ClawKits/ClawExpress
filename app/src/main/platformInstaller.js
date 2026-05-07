@@ -14,15 +14,20 @@ const log  = require('./logger');
 
 const git  = require('isomorphic-git');
 const http = require('isomorphic-git/http/node');
+const { fetchManifest, ensureTemplates, resolveCwd, resolveWipeDirs, resolveVolumes } = require('./manifestRegistry');
 
 async function cloneRepoLocally(url, targetDir, sendLog) {
   sendLog(`[SYSTEM] Starting JS-native git clone from ${url}...`);
   sendLog(`[SYSTEM] This bypasses the need for Git to be installed on your system!`);
   try {
     if (fs.existsSync(targetDir)) {
-      fs.rmSync(targetDir, { recursive: true, force: true });
+      const files = fs.readdirSync(targetDir);
+      for (const file of files) {
+        fs.rmSync(path.join(targetDir, file), { recursive: true, force: true });
+      }
+    } else {
+      fs.mkdirSync(targetDir, { recursive: true });
     }
-    fs.mkdirSync(targetDir, { recursive: true });
     await git.clone({
       fs,
       http,
@@ -155,32 +160,77 @@ async function uninstallPlatform(platformId, method, container, cwd, runningProc
 
   // ── Step 4: Delete platform working directory ────────────────────────────────
   const os = require('os');
-  const targetDir = path.join(require('electron').app.getPath('userData'), 'platforms', platformId);
+  // cwd is the canonical install dir returned at install time (e.g. userData/platforms/hermes).
+  // platformId in the store is a random UUID, so reconstructing from it would produce the wrong path.
+  const targetDir = cwd || path.join(require('electron').app.getPath('userData'), 'platforms', platformId);
+
+  // For compose-type platforms (e.g. hermes), bring the stack down BEFORE
+  // deleting the directory — docker compose needs docker-compose.yml to resolve
+  // container/network names. A plain `docker rm -f` won't work because compose
+  // uses its own naming scheme ({project}-{service}-{index}).
+  if (method === 'docker' && fs.existsSync(targetDir)) {
+    const { getManifest } = require('./manifestRegistry');
+    const manifest = getManifest(registryId || platformId);
+    if (manifest?.install?.docker?.type === 'compose') {
+      log.info(`[Uninstall] Running docker compose down for ${platformId}...`);
+      const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+      const { composeProjectName } = require('./runners/generic.runner');
+      const projectName = composeProjectName({ registryId: registryId || platformId });
+      await runCmd(runnerCmd, ['compose', '--project-name', projectName, 'down'], { cwd: targetDir, timeout: 30000 });
+    }
+  }
+
   if (fs.existsSync(targetDir)) {
     log.info(`[Uninstall] Deleting working directory: ${targetDir}`);
     await fs.promises.rm(targetDir, { recursive: true, force: true });
   }
 
-  // ── Step 5: Wipe ~/.openclaw or ~/.openfang (only if user explicitly opted in) ─────────────
+  // ── Step 5: Wipe app-managed dirs + Docker volumes (only if user opted in) ──
   if (wipeConfig) {
+    const { getManifest, resolveWipeDirs, resolveVolumes } = require('./manifestRegistry');
+    const manifest = getManifest(registryId || platformId);
+    const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+
     try {
+      // Manifest-declared host dirs (e.g. wipeOnUninstall: ["~/.{id}"])
+      if (manifest) {
+        for (const dir of resolveWipeDirs(manifest)) {
+          if (fs.existsSync(dir)) {
+            log.info(`[Uninstall] Wiping ${dir}`);
+            await fs.promises.rm(dir, { recursive: true, force: true });
+          }
+        }
+        for (const vol of resolveVolumes(manifest)) {
+          log.info(`[Uninstall] Removing Docker volume: ${vol}`);
+          await runCmd(runnerCmd, ['volume', 'rm', '-f', vol], { timeout: 15000 });
+        }
+      }
+
+      // Legacy hardcoded rules for override-adapter platforms (openclaw, openfang)
+      // kept until those adapters declare their own manifest dirs.
       if (isOpenClaw) {
-        const openclawDir = path.join(os.homedir(), '.openclaw');
-        if (fs.existsSync(openclawDir)) {
-          log.info(`[Uninstall] Wiping OpenClaw system directory: ${openclawDir}`);
-          await fs.promises.rm(openclawDir, { recursive: true, force: true });
+        const dir = path.join(os.homedir(), '.openclaw');
+        if (fs.existsSync(dir)) {
+          log.info(`[Uninstall] Wiping OpenClaw system directory: ${dir}`);
+          await fs.promises.rm(dir, { recursive: true, force: true });
         }
       }
       if (platformId === 'openfang' || registryId === 'openfang') {
-        const openfangDir = path.join(os.homedir(), '.openfang');
-        if (fs.existsSync(openfangDir)) {
-          log.info(`[Uninstall] Wiping OpenFang system directory: ${openfangDir}`);
-          await fs.promises.rm(openfangDir, { recursive: true, force: true });
+        const dir = path.join(os.homedir(), '.openfang');
+        if (fs.existsSync(dir)) {
+          log.info(`[Uninstall] Wiping OpenFang system directory: ${dir}`);
+          await fs.promises.rm(dir, { recursive: true, force: true });
         }
-        try {
-          log.info(`[Uninstall] Removing OpenFang custom preserved image (if any)...`);
-          await runCmd('docker', ['rmi', '-f', 'openfang-custom:latest'], { timeout: 15000 });
-        } catch (_) {}
+        await runCmd(runnerCmd, ['rmi', '-f', 'openfang-custom:latest'], { timeout: 15000 });
+      }
+
+      // Generic cleanup for dockerfile-build platforms
+      if (manifest?.install?.docker?.type === 'dockerfile-build') {
+        const { imageName, imageTag } = manifest.install.docker;
+        const tag = `${imageName || platformId}:${imageTag || 'latest'}`;
+        log.info(`[Uninstall] Removing built image: ${tag}`);
+        await runCmd(runnerCmd, ['rmi', '-f', tag], { timeout: 15000 });
+        await runCmd(runnerCmd, ['rmi', '-f', `${platformId}-custom:latest`], { timeout: 15000 });
       }
     } catch (err) {
       log.error(`[Uninstall] Failed to wipe config directories: ${err.message}`);
@@ -206,6 +256,13 @@ function registerPlatformInstallerHandlers(runningProcesses) {
     sendLog(`[SYSTEM] Target directory: ${targetDir}`);
     sendLog(`[SYSTEM] Selected runtime: ${method.toUpperCase()}`);
 
+    // Ensure manifest + template files are up-to-date before install.
+    // In local mode this is a no-op. In remote mode it fetches from Cloudflare.
+    try {
+      const manifest = await fetchManifest(platformId);
+      if (manifest) await ensureTemplates(manifest);
+    } catch (_) {}
+
     try {
       if (!fs.existsSync(platformsDir)) fs.mkdirSync(platformsDir);
       if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
@@ -214,12 +271,14 @@ function registerPlatformInstallerHandlers(runningProcesses) {
       return { success: false, reason: err.message };
     }
 
-    const isOpenfangPlatform = platformId === 'openfang';
-    const openfangDir = path.join(os.homedir(), '.openfang');
-    // For OpenFang, the canonical cwd is ~/.openfang (single source of truth)
-    const resolvedCwd = isOpenfangPlatform ? openfangDir : targetDir;
-    if (isOpenfangPlatform) {
-      sendLog(`[INFO] OpenFang: canonical config dir is ${openfangDir}`);
+    // Resolve cwd from manifest if available; fall back to legacy hardcoded rules
+    // so existing override adapters (openfang, openclaw) keep working unchanged.
+    const manifest = await fetchManifest(platformId).catch(() => null);
+    const resolvedCwd = manifest
+      ? resolveCwd(manifest, app.getPath('userData'))
+      : (platformId === 'openfang' ? path.join(os.homedir(), '.openfang') : targetDir);
+    if (resolvedCwd !== targetDir) {
+      sendLog(`[INFO] Canonical config dir: ${resolvedCwd}`);
     }
 
     const doFinalizeConfig = () => finalizeConfig(platformId, targetDir, config, configMapping, sendLog);
@@ -244,7 +303,8 @@ function registerPlatformInstallerHandlers(runningProcesses) {
             cwd: targetDir,
             stdio: ['ignore', 'pipe', 'pipe'],
             env: npmEnv,
-            shell: isWin
+            shell: isWin,
+            windowsHide: true
           });
 
           installChild.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
@@ -262,7 +322,7 @@ function registerPlatformInstallerHandlers(runningProcesses) {
             sendLog('[SUCCESS] openclaw installed globally.');
             doFinalizeConfig();
             const verifyCmd = isWin ? 'openclaw.cmd' : 'openclaw';
-            const verify = require('child_process').spawnSync(verifyCmd, ['--version'], { encoding: 'utf8', env: baseEnv, shell: isWin });
+            const verify = require('child_process').spawnSync(verifyCmd, ['--version'], { encoding: 'utf8', env: baseEnv, shell: isWin, windowsHide: true });
             if (verify.status === 0) {
               sendLog(`[SUCCESS] openclaw CLI verified: ${verify.stdout.trim()}`);
             } else {
@@ -273,9 +333,120 @@ function registerPlatformInstallerHandlers(runningProcesses) {
           return;
         }
 
+        // ── Manifest-driven dockerfile-build ──────────────────────────────
+        // If the manifest declares install.docker.type = 'dockerfile-build',
+        // we clone the repo then run docker build with the specified Dockerfile.
+        // This is the preferred pattern for platforms like NanoClaw that ship
+        // their own Dockerfile with pre-compiled native deps + tools.
+        if (manifest?.install?.docker?.type === 'dockerfile-build' && method === 'docker') {
+          const { url, dockerfilePath, contextDir, imageName, imageTag } = manifest.install.docker;
+          const cloneDir = path.join(targetDir, 'source');
+          
+          sendLog(`[INFO] Dockerfile-build mode: cloning ${url}...`);
+          const cloneSuccess = await cloneRepoLocally(url, cloneDir, sendLog);
+          if (!cloneSuccess) {
+            resolve({ success: false, reason: 'Failed to clone repository' });
+            return;
+          }
+
+          // Clear any previously committed custom image
+          const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+          try {
+            require('child_process').spawnSync(runnerCmd, ['rmi', '-f', `${platformId}-custom:latest`], { windowsHide: true });
+          } catch (_) {}
+
+          const buildContext = contextDir ? path.join(cloneDir, contextDir) : cloneDir;
+          const dfPath = dockerfilePath || 'Dockerfile';
+          const tag = `${imageName || platformId}:${imageTag || 'latest'}`;
+
+          sendLog(`[INFO] Building Docker image: ${tag}`);
+          sendLog(`[INFO] Dockerfile: ${dfPath}`);
+          sendLog(`[INFO] Context: ${buildContext}`);
+
+          const buildCmd = global.CONTAINER_RUNTIME || 'docker';
+          const buildArgs = ['build', '-f', path.join(cloneDir, dfPath), '-t', tag, buildContext];
+          
+          sendLog(`[CMD] ${buildCmd} ${buildArgs.join(' ')}`);
+
+          const buildChild = spawn(buildCmd, buildArgs, {
+            cwd: cloneDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: baseEnv,
+            shell: isWin,
+            windowsHide: true
+          });
+          buildChild.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
+          buildChild.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[WARN] ${l}`)));
+          buildChild.on('error', err => {
+            sendLog(`[ERROR] Docker build failed to start: ${err.message}`);
+            resolve({ success: false, reason: err.message });
+          });
+          buildChild.on('close', code => {
+            if (code === 0) {
+              sendLog(`[SUCCESS] Docker image ${tag} built successfully.`);
+              doFinalizeConfig();
+              resolve({ success: true, cwd: resolvedCwd });
+            } else {
+              sendLog(`[ERROR] Docker build failed with exit code ${code}`);
+              resolve({ success: false, reason: `Docker build exit code ${code}` });
+            }
+          });
+          return;
+        }
+
+        // Fallback to fresh manifest if UI passed an outdated or empty installScript
         if (!installScript || installScript.length === 0) {
-          sendLog('[INFO] No installation script provided by Cloud Registry, keeping empty directory...');
+          installScript = manifest?.installScript?.[method];
+        }
+
+        if (!installScript || installScript.length === 0) {
+          sendLog('[INFO] Writing configuration files...');
           doFinalizeConfig();
+
+          // For compose-type platforms, pull the image now so the user sees
+          // download progress during install rather than silently on first start.
+          if (manifest?.install?.docker?.type === 'compose' && method === 'docker') {
+            const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+            const { composeProjectName } = require('./runners/generic.runner');
+            const projectName = composeProjectName({ registryId: platformId });
+            sendLog('[INFO] Pulling Docker image...');
+            sendLog(`[CMD] ${runnerCmd} compose --project-name ${projectName} pull`);
+
+            await new Promise((res) => {
+              const pullChild = spawn(
+                runnerCmd,
+                ['compose', '--project-name', projectName, 'pull'],
+                { cwd: targetDir, stdio: ['ignore', 'pipe', 'pipe'], env: baseEnv, windowsHide: true }
+              );
+              pullChild.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
+              pullChild.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[INFO] ${l}`)));
+              pullChild.on('error', err => { sendLog(`[WARN] Pull failed: ${err.message}`); res(); });
+              pullChild.on('close', code => {
+                if (code === 0) sendLog('[SUCCESS] Image pulled successfully.');
+                else sendLog(`[WARN] Pull exited with code ${code} — will retry on first start.`);
+                res();
+              });
+            });
+
+            sendLog('[INFO] Building Docker image (if specified)...');
+            sendLog(`[CMD] ${runnerCmd} compose --project-name ${projectName} build`);
+            await new Promise((res) => {
+              const buildChild = spawn(
+                runnerCmd,
+                ['compose', '--project-name', projectName, 'build'],
+                { cwd: targetDir, stdio: ['ignore', 'pipe', 'pipe'], env: baseEnv, windowsHide: true }
+              );
+              buildChild.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
+              buildChild.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[INFO] ${l}`)));
+              buildChild.on('error', err => { sendLog(`[WARN] Build failed: ${err.message}`); res(); });
+              buildChild.on('close', code => {
+                if (code === 0) sendLog('[SUCCESS] Image built successfully.');
+                else sendLog(`[WARN] Build exited with code ${code}`);
+                res();
+              });
+            });
+          }
+
           resolve({ success: true, cwd: resolvedCwd });
           return;
         }
@@ -291,10 +462,10 @@ function registerPlatformInstallerHandlers(runningProcesses) {
         // ── Git-less interception for Docker builds ──
         if ((cmd === 'docker' || cmd === 'podman') && args[0] === 'build') {
           // If rebuilding, we must clear the saved custom image
-          if (isOpenfangPlatform) {
+          if (platformId === 'openfang') {
             sendLog('[INFO] Clearing old OpenFang container state before building...');
             const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
-            require('child_process').spawnSync(runnerCmd, ['rmi', '-f', 'openfang-custom:latest']);
+            require('child_process').spawnSync(runnerCmd, ['rmi', '-f', 'openfang-custom:latest'], { windowsHide: true });
           }
 
           const gitUrlIndex = args.findIndex(a => typeof a === 'string' && a.startsWith('http') && a.endsWith('.git'));
@@ -310,6 +481,25 @@ function registerPlatformInstallerHandlers(runningProcesses) {
           }
         }
 
+        // ── Git-less interception for direct git clones ──
+        if (cmd === 'git' && args[0] === 'clone') {
+          const gitUrl = args.find(a => typeof a === 'string' && a.startsWith('http') && a.endsWith('.git'));
+          if (gitUrl) {
+            let outDir = targetDir;
+            if (args.length > 2 && args[args.length - 1] !== '.' && !args[args.length - 1].startsWith('http')) {
+              outDir = path.join(targetDir, args[args.length - 1]);
+            }
+            const cloneSuccess = await cloneRepoLocally(gitUrl, outDir, sendLog);
+            if (cloneSuccess) {
+              doFinalizeConfig();
+              resolve({ success: true, cwd: outDir });
+            } else {
+              resolve({ success: false, reason: 'Failed to clone repository internally without Git' });
+            }
+            return;
+          }
+        }
+
         if (isWin && (cmd === 'npm' || cmd === 'npx' || cmd === 'docker')) {
           if (cmd === 'npm' || cmd === 'npx') cmd += '.cmd';
         }
@@ -319,7 +509,8 @@ function registerPlatformInstallerHandlers(runningProcesses) {
           cwd: targetDir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: baseEnv,
-          shell: isWin
+          shell: isWin,
+          windowsHide: true
         });
         child.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(l)));
         child.stderr.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[WARN] ${l}`)));
@@ -367,7 +558,8 @@ function registerPlatformInstallerHandlers(runningProcesses) {
         const child = spawn(npmCmd, ['install', '-g', 'openclaw@latest'], {
           stdio: ['ignore', 'pipe', 'pipe'],
           env: npmEnv,
-          shell: isWin
+          shell: isWin,
+          windowsHide: true
         });
         
         child.stdout.on('data', d => d.toString().split(/[\r\n]+/).filter(Boolean).forEach(l => sendLog(`[INFO] ${l}`)));
@@ -441,7 +633,7 @@ function registerPlatformInstallerHandlers(runningProcesses) {
               const dh = process.env.DOCKER_HOST || '';
               const isOrb = dh.includes('orbstack') ||
                 fs.existsSync('/run/host-services/ssh-auth.sock') ||      // macOS OrbStack marker
-                spawnSync('orb', ['version'], { timeout: 2000, env: envWithPath }).status === 0;
+                spawnSync('orb', ['version'], { timeout: 2000, env: envWithPath, windowsHide: true }).status === 0;
               return isOrb;
             },
             label: 'OrbStack',
@@ -453,10 +645,10 @@ function registerPlatformInstallerHandlers(runningProcesses) {
           // Custom detect function (for OrbStack)
           if (rt.detectFn && !rt.detectFn()) continue;
 
-          const res = spawnSync(rt.cmd, rt.infoArgs, { timeout: 5000, shell: isWin, env: envWithPath });
+          const res = spawnSync(rt.cmd, rt.infoArgs, { timeout: 5000, shell: isWin, env: envWithPath, windowsHide: true });
           if (res.status === 0) {
             // Get version string
-            const verRes = spawnSync(rt.cmd, rt.versionArgs, { timeout: 3000, shell: isWin, encoding: 'utf8', env: envWithPath });
+            const verRes = spawnSync(rt.cmd, rt.versionArgs, { timeout: 3000, shell: isWin, encoding: 'utf8', env: envWithPath, windowsHide: true });
             const version = verRes.stdout?.trim() || 'unknown';
             detected = { ...rt, version };
             break;
@@ -484,7 +676,7 @@ function registerPlatformInstallerHandlers(runningProcesses) {
         const macPaths = '/usr/local/bin:/opt/homebrew/bin:/opt/local/bin';
         const customPath = process.env.PATH + PATH_SEP + (isWin ? '' : macPaths);
         const envWithPath = { ...process.env, PATH: customPath };
-        const res = spawnSync('node', ['-v'], { shell: isWin, env: envWithPath });
+        const res = spawnSync('node', ['-v'], { shell: isWin, env: envWithPath, windowsHide: true });
         if (res.status === 0) {
           const ver = res.stdout.toString().trim();
           checks.push({ id: 'dep', status: 'success', text: `Node.js ${ver} detected.` });

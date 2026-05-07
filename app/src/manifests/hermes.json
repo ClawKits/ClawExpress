@@ -1,0 +1,137 @@
+{
+  "id": "hermes",
+  "name": "Hermes Workspace",
+  "version": "latest",
+  "author": "outsourc-e / NousResearch",
+  "description": "Your AI agent's command center — chat, files, memory, skills, MCP, and terminal in one place. Powered by NousResearch/hermes-agent + Docker Compose.",
+  "method": ["docker"],
+  "port": 3000,
+  "verified": true,
+  "updatable": true,
+
+  "dirs": {
+    "cwd": "userData",
+    "wipeOnUninstall": [],
+    "volumes": ["claude-data"]
+  },
+
+  "install": {
+    "docker": {
+      "type": "compose",
+      "templateFiles": ["docker-compose.yml"],
+      "shellService": "hermes-agent"
+    }
+  },
+
+  "start": {
+    "docker": ["docker", "compose", "up", "-d"]
+  },
+
+  "stop": {
+    "docker": ["docker", "compose", "down"]
+  },
+
+  "readiness": {
+    "logPatterns": [
+      "listening on.*:3000",
+      "server\\s+(started|listening)",
+      "\\[gateway\\]\\s+connected",
+      "hermes.workspace.*ready"
+    ],
+    "http": {
+      "path": "/",
+      "port": 3000,
+      "retries": 45
+    }
+  },
+
+  "configSchema": [
+    {
+      "id": "llm_config",
+      "type": "llm-key-picker",
+      "label": "LLM Provider",
+      "description": "Select an LLM provider key. The credential is injected into the Hermes Agent gateway via .env so it can reach your chosen model."
+    },
+    {
+      "id": "hermes_password",
+      "type": "text",
+      "label": "Workspace Password (optional)",
+      "placeholder": "Leave blank to disable password protection",
+      "description": "Password-protect the Hermes Workspace web UI."
+    },
+    {
+      "id": "api_server_key",
+      "type": "text",
+      "label": "Gateway API Key",
+      "placeholder": "Min 20 chars — e.g. openssl rand -hex 24",
+      "description": "Shared secret for the hermes-agent gateway. Must be at least 20 characters (not a simple word/number). Run: openssl rand -hex 24"
+    }
+  ],
+
+  "configFiles": {
+    "docker-compose.yml": {
+      "type": "template"
+    },
+
+    "config.yaml": {
+      "type": "yaml",
+      "header": "# Hermes Agent Configuration — managed by ClawExpress\n# Generated during installation. Overwritten on re-install.\n",
+      "mappings": [
+        {
+          "field": "llm_config",
+          "type": "llm-model-config",
+          "yamlPath": "model",
+          "autoResolve": true,
+          "modelKey": "default",
+          "providerKey": "provider",
+          "baseUrlKey": "base_url",
+          "fallbackProviderType": "custom",
+          "providerTypeOverrides": {
+            "anthropic":  "anthropic",
+            "google":     "gemini",
+            "openrouter": "openrouter"
+          }
+        }
+      ]
+    },
+
+    ".env": {
+      "type": "dotenv",
+      "defaults": {
+        "COOKIE_SECURE": "0",
+        "TRUST_PROXY": "1",
+        "GATEWAY_ALLOW_ALL_USERS": "true"
+      },
+      "mappings": [
+        { "field": "llm_config", "type": "llm-provider-key" },
+        {
+          "field": "llm_config",
+          "type": "llm-provider-env",
+          "autoResolve": true,
+          "envTemplate": {
+            "HERMES_DEFAULT_MODEL": "$providerId/$defaultModel",
+            "CLAUDE_DEFAULT_MODEL": "$providerId/$defaultModel"
+          },
+          "openaiCompat": {
+            "providers": ["deepseek", "groq", "mistral", "xai", "nvidia", "together", "cerebras", "venice"],
+            "envKeys": {
+              "OPENAI_BASE_URL": "$baseUrl",
+              "OPENAI_API_KEY": "$key"
+            }
+          }
+        },
+        { "field": "hermes_password", "envKey": "HERMES_PASSWORD" },
+        { "field": "hermes_password", "envKey": "CLAUDE_PASSWORD" },
+        { "field": "api_server_key",  "envKey": "API_SERVER_KEY" },
+        { "field": "api_server_key",  "envKey": "CLAUDE_API_TOKEN" }
+      ]
+    }
+  },
+
+  "schema": {
+    "features": ["ai_engine_setup", "custom_env"],
+    "fields": [
+      { "key": "port", "label": "UI Port", "type": "number", "placeholder": "3000" }
+    ]
+  }
+}

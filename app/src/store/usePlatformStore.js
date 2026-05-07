@@ -18,6 +18,10 @@ export const usePlatformStore = create((set, get) => ({
     updateStates: typeof updater === 'function' ? updater(state.updateStates) : updater
   })),
 
+  stoppingPlatform: null, // { id, name } — shown in StopProgressModal
+  setStoppingPlatform: (p) => set({ stoppingPlatform: p }),
+  clearStoppingPlatform: () => set({ stoppingPlatform: null }),
+
   // ─── Init: load from disk on app start ──────────────────────────────────
   init: async () => {
     if (get().initialized) return;
@@ -143,17 +147,25 @@ export const usePlatformStore = create((set, get) => ({
 
   // ─── Stop a platform process via IPC ─────────────────────────────────────
   stopPlatform: async (id) => {
+    const platform = get().platforms.find(p => p.id === id);
+
     set(state => ({
       platforms: state.platforms.map(p =>
         p.id === id ? { ...p, status: 'STOPPING' } : p
       )
     }));
 
-    const platform = get().platforms.find(p => p.id === id);
+    // Show progress modal for Docker platforms (commit + stop takes time)
+    if (platform?.method === 'docker') {
+      set({ stoppingPlatform: { id: platform.id, name: platform.name } });
+    }
+
     await window.electron?.ipcRenderer.invoke('platform-stop', {
       platformId: id,
       method: platform?.method,
-      container: platform?.container
+      container: platform?.container,
+      registryId: platform?.registryId,
+      cwd: platform?.cwd,
     });
 
     set(state => ({
@@ -274,15 +286,20 @@ export const usePlatformStore = create((set, get) => ({
     try {
       const res = await fetch(REGISTRY_URL);
       const data = await res.json();
-      
+
       const platforms = data.platforms || [];
-      
-      // Inject local platform overrides
-      localPlatforms.forEach(app => platforms.push(app));
+
+      // Merge local platforms that aren't already in the remote list.
+      // This lets localPlatforms act as bundled additions to the remote registry.
+      localPlatforms.forEach(lp => {
+        if (!platforms.find(p => p.id === lp.id)) platforms.push(lp);
+      });
 
       set({ marketplace: platforms, marketplaceStatus: 'success' });
     } catch {
-      set({ marketplaceStatus: 'error' });
+      // Offline / CF unreachable — fall back to bundled localPlatforms so
+      // the Marketplace stays usable during local dev and without internet.
+      set({ marketplace: [...localPlatforms], marketplaceStatus: 'success' });
     }
   }
 }));

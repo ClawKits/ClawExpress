@@ -217,6 +217,8 @@ app.whenReady().then(() => {
     'channel-pairing-accept', 'channel-login-success', 'channel-login-complete',
     // PTY
     'pty-start', 'pty-input', 'pty-resize', 'pty-kill',
+    // Docker quick actions + container listing
+    'quick-action-exec', 'docker-list-containers',
     // Auth
     'open-auth-window', 'auth-get-token', 'auth-set-token', 'auth-clear-token',
     // Skills
@@ -307,7 +309,7 @@ ipcMain.handle('window-close', (event) => BrowserWindow.fromWebContents(event.se
 // Core IPC — Platform Process Control
 // ─────────────────────────────────────────────────────────────────────────────
 ipcMain.handle('platform-start',      (event, { platformId, config }) => spawnPlatform(platformId, config, event.sender));
-ipcMain.handle('platform-stop',       (event, { platformId, method, container }) => stopPlatform(platformId, event.sender, method, container));
+ipcMain.handle('platform-stop',       (event, { platformId, method, container, registryId, cwd }) => stopPlatform(platformId, event.sender, method, container, registryId, cwd));
 ipcMain.handle('platform-status',     (event, { platformId }) => ({ running: runningProcesses.has(platformId) }));
 
 ipcMain.handle('platform-send-input', (event, { platformId, input }) => {
@@ -329,25 +331,36 @@ ipcMain.handle('platforms-save', (event, data) => { savePlatforms(data); return 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core IPC — Platform Health Check (TCP Probe)
 // ─────────────────────────────────────────────────────────────────────────────
-function readDashboardUrl(port, cwd) {
-  const loc = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-  try {
-    if (fs.existsSync(loc)) {
-      const cfg   = JSON.parse(fs.readFileSync(loc, 'utf8'));
-      const token = cfg?.gateway?.auth?.token;
-      if (token) return `http://127.0.0.1:${port}/?token=${token}`;
-    }
-  } catch (_) {}
-  return null;
+function readDashboardUrl(port, cwd, platformId) {
+  // Only attempt to read openclaw.json for OpenClaw platforms
+  if (platformId === 'openclaw' || (platformId && platformId.includes('openclaw'))) {
+    const loc = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+    try {
+      if (fs.existsSync(loc)) {
+        const cfg   = JSON.parse(fs.readFileSync(loc, 'utf8'));
+        const token = cfg?.gateway?.auth?.token;
+        if (token) return `http://127.0.0.1:${port}/?token=${token}`;
+      }
+    } catch (_) {}
+  }
+  // For all other platforms, return a simple URL
+  return port ? `http://127.0.0.1:${port}/` : null;
 }
 
 ipcMain.handle('platform-health-check', (event, { port, platformId, cwd }) => {
   return new Promise((resolve) => {
-    const targetPort = port || 18789;
+    // Only default to 18789 for OpenClaw platforms.
+    // Other platforms with no port are not health-checkable via TCP.
+    const isOC = platformId === 'openclaw' || (platformId && platformId.includes('openclaw'));
+    const targetPort = port || (isOC ? 18789 : null);
+
+    if (!targetPort) {
+      return resolve({ running: false, source: 'no-port' });
+    }
 
     // In-process registry is fastest and most accurate for the current session
     if (platformId && runningProcesses.has(platformId)) {
-      return resolve({ running: true, source: 'process', dashboardUrl: readDashboardUrl(targetPort, cwd) });
+      return resolve({ running: true, source: 'process', dashboardUrl: readDashboardUrl(targetPort, cwd, platformId) });
     }
 
     // TCP probe to catch externally running gateways
@@ -356,7 +369,7 @@ ipcMain.handle('platform-health-check', (event, { port, platformId, cwd }) => {
     socket.on('connect', () => {
       clearTimeout(timer);
       socket.destroy();
-      resolve({ running: true, source: 'port', dashboardUrl: readDashboardUrl(targetPort, cwd) });
+      resolve({ running: true, source: 'port', dashboardUrl: readDashboardUrl(targetPort, cwd, platformId) });
     });
     socket.on('error', () => { clearTimeout(timer); resolve({ running: false, source: 'error' }); });
   });
@@ -428,4 +441,39 @@ ipcMain.handle('download-update',   () => app.isPackaged ? updater.downloadUpdat
 ipcMain.handle('install-update',    () => { if (app.isPackaged) updater.quitAndInstall(); return { status: 'dev-mode' }; });
 ipcMain.handle('get-update-status', () => updater.getStatus());
 ipcMain.handle('get-app-version',   () => app.getVersion());
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core IPC — Docker Quick Actions
+// ─────────────────────────────────────────────────────────────────────────────
+ipcMain.handle('docker-list-containers', (_event, { projectName }) => {
+  const runtime = global.CONTAINER_RUNTIME || 'docker';
+  const result = require('child_process').spawnSync(
+    runtime,
+    ['ps', '--filter', `label=com.docker.compose.project=${projectName}`, '--format', '{{.Names}}'],
+    { encoding: 'utf8', windowsHide: true, timeout: 8000 }
+  );
+  const containers = (result.stdout || '')
+    .split('\n').map(s => s.trim()).filter(Boolean).sort();
+  return { success: true, containers };
+});
+
+ipcMain.handle('quick-action-exec', (_event, { command, containerName, method }) => {
+  const { spawn } = require('child_process');
+  const runtime = global.CONTAINER_RUNTIME || 'docker';
+
+  const [cmd, args] = method === 'docker'
+    ? [runtime, ['exec', containerName, ...command]]
+    : [command[0], command.slice(1)];
+
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, args, { env: process.env, windowsHide: true });
+    let output = '';
+    proc.stdout.on('data', d => { output += d.toString(); });
+    proc.stderr.on('data', d => { output += d.toString(); });
+    const done = (code) => resolve({ success: code === 0, output: output || '(no output)', exitCode: code });
+    proc.on('close', done);
+    proc.on('error', (err) => resolve({ success: false, output: err.message, exitCode: -1 }));
+    setTimeout(() => { try { proc.kill(); } catch (_) {} }, 30000);
+  });
+});
 }

@@ -47,7 +47,7 @@ jobs:
           ---
 
           ## 🍎 macOS Installation
-          
+
           - 🔋 **Apple Silicon (M1/M2/M3)**: Download `...-macOS-arm64.dmg`
           - ⚙️ **Intel Chip**: Download `...-macOS-x64.dmg`
 

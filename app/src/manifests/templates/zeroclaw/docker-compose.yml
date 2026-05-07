@@ -1,0 +1,25 @@
+services:
+  zeroclaw:
+    image: clawexpress/zeroclaw:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      # Required for the gateway to be reachable through Docker port mapping
+      ZEROCLAW_ALLOW_PUBLIC_BIND: "1"
+      ZEROCLAW_GATEWAY_HOST: "0.0.0.0"
+      ZEROCLAW_WEB_DIST_DIR: "/zeroclaw-data/web/dist"
+    ports:
+      - "127.0.0.1:42617:42617"
+    volumes:
+      # Mount specific subdirectories to avoid shadowing the built-in /zeroclaw-data/web
+      - ./data/.zeroclaw:/zeroclaw-data/.zeroclaw
+      - ./data/workspace:/zeroclaw-data/workspace
