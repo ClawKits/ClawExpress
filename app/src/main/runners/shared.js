@@ -36,6 +36,12 @@ function fireSpawn(cmd, args, opts = {}) {
 function startReadyPoller({ platformId, requireToken = false, readToken, port, sendLog, maxRetries = 45, intervalMs = 1500 }) {
   let attempts = 0;
 
+  // After this many attempts without a token, probe the HTTP endpoint
+  // anyway — the gateway may have started with auth disabled or the
+  // token file hasn't been flushed to the host mount yet (common after
+  // Docker image upgrades).
+  const TOKEN_GRACE_ATTEMPTS = 15;
+
   const notifyReady = (token) => {
     const dashboardUrl = token ? `http://127.0.0.1:${port}/?token=${token}` : `http://127.0.0.1:${port}/`;
     sendLog(`[SYSTEM] Gateway ready! Opening dashboard: ${dashboardUrl}`);
@@ -54,16 +60,26 @@ function startReadyPoller({ platformId, requireToken = false, readToken, port, s
     let token = null;
     if (requireToken) {
       token = readToken ? readToken() : null;
-      if (!token) {
+      if (!token && attempts < TOKEN_GRACE_ATTEMPTS) {
+        // Token not written yet — retry after a short delay.
         setTimeout(poll, intervalMs);
         return;
+      }
+      // After grace period, probe HTTP anyway even without token.
+      // The gateway may have generated its token by the time we connect.
+      if (!token && attempts === TOKEN_GRACE_ATTEMPTS) {
+        sendLog('[SYSTEM] Auth token not found in config yet — probing gateway anyway...');
       }
     }
 
     let settled = false;
-    const req = http.get(`http://127.0.0.1:${port}/`, () => {
+    const req = http.get(`http://127.0.0.1:${port}/`, (res) => {
       if (settled) return;
       settled = true;
+      // Re-read token one last time — it may have appeared between poll start and response
+      if (requireToken && !token) {
+        token = readToken ? readToken() : null;
+      }
       notifyReady(token);
     });
     req.on('error', () => {

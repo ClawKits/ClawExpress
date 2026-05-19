@@ -158,6 +158,11 @@ function prepareConfigForNpm(port) {
 
     if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
     if (!cfg.gateway.auth) cfg.gateway.auth = { mode: 'token' };
+    // Auto-generate auth token if missing (same as Docker mode)
+    if (!cfg.gateway.auth.token) {
+      cfg.gateway.auth.token = require('crypto').randomBytes(24).toString('hex');
+      modified = true;
+    }
 
     // Replace allowedOrigins entirely with only the target port.
     // Stale ports from previous runs cause WS upgrade rejections when OpenClaw
@@ -267,6 +272,20 @@ function prepareConfigForDocker(openclawDir, gatewayPort = 18789) {
     if (cfg.gateway.bind !== 'lan') { cfg.gateway.bind = 'lan'; modified = true; }
     if (!cfg.gateway.auth) cfg.gateway.auth = { mode: 'token' };
 
+    // New OpenClaw versions refuse to start with bind=lan unless a real
+    // auth token is present (exit code 78: "Refusing to bind gateway to
+    // lan without auth").  Auto-generate one if missing.
+    if (!cfg.gateway.auth.token) {
+      cfg.gateway.auth.token = require('crypto').randomBytes(24).toString('hex');
+      modified = true;
+      // Mark that we just generated a fresh token so post-start hooks
+      // know to clear stale paired devices (they hold old device-tokens
+      // bound to the previous gateway token → device_token_mismatch).
+      try {
+        fs.writeFileSync(path.join(openclawDir, '.token-rotated'), '', 'utf8');
+      } catch (_) {}
+    }
+
     // Publish only the configured gateway port. The internal browser/server
     // port is used as a readiness signal, not as a public host port.
     if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
@@ -368,6 +387,7 @@ function prepareDockerScript(scriptArr, config, containerName) {
   scriptArr.splice(finalRunIdx + 1, 0, 
     '-v', `${openclawDir}:/home/node/.openclaw`,
     '--tmpfs', '/home/node/.openclaw/canvas:uid=1000,gid=1000,exec',
+    '--tmpfs', '/home/node/.openclaw/agents:uid=1000,gid=1000,exec',
     '-v', 'openclaw-plugins-cache:/home/node/.openclaw/plugin-runtime-deps'
   );
 
@@ -379,6 +399,19 @@ function prepareDockerScript(scriptArr, config, containerName) {
 
   if (!scriptArr.includes('OPENCLAW_GATEWAY_BIND=lan')) scriptArr.splice(injectIdx, 0, '-e', 'OPENCLAW_GATEWAY_BIND=lan');
   if (!scriptArr.includes('HOST=0.0.0.0'))              scriptArr.splice(injectIdx, 0, '-e', 'HOST=0.0.0.0');
+
+  // Inject the auth token via env var so the gateway accepts connections.
+  // New OpenClaw versions (2026+) refuse to bind to lan without auth.
+  const authToken = readOpenClawToken();
+  if (authToken) {
+    // Remove any stale OPENCLAW_GATEWAY_TOKEN from previous runs
+    for (let i = scriptArr.length - 1; i >= 0; i--) {
+      if (typeof scriptArr[i] === 'string' && scriptArr[i].startsWith('OPENCLAW_GATEWAY_TOKEN=')) {
+        scriptArr.splice(i - 1, 2); // remove '-e' and the value
+      }
+    }
+    scriptArr.splice(injectIdx, 0, '-e', `OPENCLAW_GATEWAY_TOKEN=${authToken}`);
+  }
 
   // Force allowedOrigins via env var — this bypasses OpenClaw's internal
   // backup/restore mechanism that keeps clobbering the config file origins.
@@ -457,15 +490,15 @@ function scheduleModelApply(config, containerName, sendLog) {
   setTimeout(() => {
     sendLog(`[SYSTEM] Applying model: ${chosenModel}`);
     const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
-    const result = require('child_process').spawnSync(
-      runnerCmd, ['exec', containerName, 'openclaw', 'models', 'set', chosenModel],
-      { encoding: 'utf8', timeout: 15000 }
-    );
-    if (result.status === 0) {
-      sendLog(`[SUCCESS] Model set to: ${chosenModel}`);
-    } else {
-      sendLog(`[WARN] Model set failed: ${result.stderr || ''}`);
-    }
+    const { exec } = require('child_process');
+    const cmd = `${runnerCmd} exec ${containerName} openclaw models set ${chosenModel}`;
+    const proc = exec(cmd, { timeout: 15000, windowsHide: true }, (err, stdout, stderr) => {
+      if (!err) {
+        sendLog(`[SUCCESS] Model set to: ${chosenModel}`);
+      } else {
+        sendLog(`[WARN] Model set failed: ${stderr || err.message}`);
+      }
+    });
   }, 20000);
 }
 
@@ -487,16 +520,139 @@ function scheduleDoctorFix(config, containerName, sendLog) {
   setTimeout(() => {
     sendLog(`[SYSTEM] Running OpenClaw doctor --fix to validate config...`);
     const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
-    const result = require('child_process').spawnSync(
-      runnerCmd, ['exec', containerName, 'openclaw', 'doctor', '--fix'],
-      { encoding: 'utf8', timeout: 30000 }
-    );
-    if (result.status === 0) {
-      sendLog(`[SUCCESS] OpenClaw doctor: config validated OK`);
-    } else {
-      sendLog(`[WARN] OpenClaw doctor: ${(result.stdout || result.stderr || '').slice(0, 500)}`);
-    }
+    const { exec } = require('child_process');
+
+    exec(`${runnerCmd} exec ${containerName} openclaw doctor --fix`, { timeout: 30000, windowsHide: true }, (err, stdout, stderr) => {
+      if (!err) {
+        sendLog(`[SUCCESS] OpenClaw doctor: config validated OK`);
+      } else {
+        sendLog(`[WARN] OpenClaw doctor: ${(stdout || stderr || '').slice(0, 500)}`);
+      }
+
+      // If the gateway token was just rotated (new install or upgrade),
+      // clear all previously paired devices — their device-tokens are
+      // bound to the old gateway token and will cause "device_token_mismatch".
+      const openclawDir = path.join(os.homedir(), '.openclaw');
+      const markerFile = path.join(openclawDir, '.token-rotated');
+      if (fs.existsSync(markerFile)) {
+        sendLog(`[SYSTEM] Token was rotated — clearing stale paired devices...`);
+        exec(`${runnerCmd} exec ${containerName} openclaw devices clear --yes`, { timeout: 15000, windowsHide: true }, (clearErr) => {
+          if (!clearErr) sendLog(`[SUCCESS] Stale devices cleared.`);
+          try { fs.unlinkSync(markerFile); } catch (_) {}
+          dispatchFreshToken();
+        });
+      } else {
+        dispatchFreshToken();
+      }
+
+      function dispatchFreshToken() {
+        const freshToken = readOpenClawToken();
+        if (freshToken) {
+          const { BrowserWindow } = require('electron');
+          const win = BrowserWindow.getAllWindows()[0];
+          const gatewayPort = config.port || 18789;
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('platform-ready', {
+              platformId: config.registryId || 'openclaw',
+              dashboardUrl: `http://127.0.0.1:${gatewayPort}/?token=${freshToken}`,
+            });
+            sendLog(`[SYSTEM] Auth token refreshed after doctor --fix.`);
+          }
+        }
+      }
+    });
   }, 10000);
+}
+
+// ── Device auto-approve poller ────────────────────────────────────────────────
+
+/**
+ * Periodically approve any pending device pairing requests.
+ *
+ * OpenClaw 2026+ requires browser/Control-UI clients to be "paired" before
+ * they can connect.  Since ClawExpress owns the gateway lifecycle, all
+ * local requests are safe to auto-approve.  We poll `openclaw devices
+ * approve --latest` every few seconds for a limited window after startup.
+ */
+function scheduleDeviceAutoApprove(config, containerName, child, sendLog) {
+  const runnerCmd = global.CONTAINER_RUNTIME || 'docker';
+  const isWin = process.platform === 'win32';
+  const token = readOpenClawToken();
+  const tokenArg = token ? ` --token ${token}` : '';
+  let stopped = false;
+  let approvedCount = 0;
+  let busy = false;   // prevent overlapping exec calls
+
+  const INITIAL_DELAY = 15000;
+  const POLL_INTERVAL = 5000;
+
+  child.on('exit', () => { stopped = true; });
+
+  setTimeout(() => {
+    const { exec } = require('child_process');
+
+    const interval = setInterval(() => {
+      if (stopped) {
+        clearInterval(interval);
+        if (approvedCount > 0) {
+          sendLog(`[SYSTEM] Device auto-approve: approved ${approvedCount} device(s) total.`);
+        }
+        return;
+      }
+      if (busy) return;  // skip if previous exec hasn't finished yet
+      busy = true;
+
+      let cmd;
+      let execOpts = { timeout: 8000, windowsHide: true };
+      
+      if (config.method === 'docker') {
+        cmd = `${runnerCmd} exec -e OPENCLAW_DIR=/tmp/cli ${containerName} openclaw devices list --json${tokenArg}`;
+      } else {
+        const cli = isWin ? 'openclaw.cmd' : 'openclaw';
+        cmd = `${cli} devices list --json${tokenArg}`;
+        const os = require('os');
+        execOpts.env = { ...process.env, OPENCLAW_DIR: require('path').join(os.tmpdir(), 'oc-cli-temp') };
+      }
+
+      exec(cmd, execOpts, (err, stdout) => {
+        if (err || !stdout) {
+          busy = false;
+          return;
+        }
+        try {
+          const out = stdout.trim();
+          const jsonStr = out.substring(out.indexOf('{'));
+          const data = JSON.parse(jsonStr);
+          
+          // Find any pending browser/control-ui requests
+          const pendingUI = (data.pending || []).filter(p => !p.isRepair && p.clientId !== 'cli');
+          
+          if (pendingUI.length > 0) {
+            const reqId = pendingUI[0].requestId;
+            let approveCmd;
+            if (config.method === 'docker') {
+              approveCmd = `${runnerCmd} exec -e OPENCLAW_DIR=/tmp/cli ${containerName} openclaw devices approve ${reqId}${tokenArg}`;
+            } else {
+              const cli = isWin ? 'openclaw.cmd' : 'openclaw';
+              approveCmd = `${cli} devices approve ${reqId}${tokenArg}`;
+            }
+            
+            exec(approveCmd, execOpts, (err2) => {
+              busy = false;
+              if (!err2) {
+                approvedCount++;
+                sendLog(`[SYSTEM] Auto-approved device pairing request.`);
+              }
+            });
+          } else {
+            busy = false; // no pending requests
+          }
+        } catch (_) {
+          busy = false;
+        }
+      });
+    }, POLL_INTERVAL);
+  }, INITIAL_DELAY);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -509,7 +665,7 @@ function scheduleDoctorFix(config, containerName, sendLog) {
 function detectReadiness(text, config) {
   // The [browser/server] line or [gateway] ready line is the definitive readiness signal.
   const mBrowser = text.match(/\[browser\/server\].*listening on https?:\/\/[\d.]+:(\d+)/i);
-  const mGateway = text.match(/\[gateway\] ready \(/i);
+  const mGateway = text.match(/\[gateway\] ready/i);
   
   if (!mBrowser && !mGateway) return null;
 
@@ -543,6 +699,7 @@ module.exports = {
   startPairingWatcher,
   scheduleModelApply,
   scheduleDoctorFix,
+  scheduleDeviceAutoApprove,
   startReadyPoller,
   detectReadiness,
   getFallbackPollerConfig,

@@ -655,6 +655,10 @@ const OpenClawAdapter = {
 
       existing.gateway = existing.gateway || { mode: 'local' };
       existing.gateway.auth = existing.gateway.auth || { mode: 'token' };
+      // Auto-generate auth token if missing — required by OpenClaw 2026+ for bind=lan
+      if (!existing.gateway.auth.token) {
+        existing.gateway.auth.token = require('crypto').randomBytes(24).toString('hex');
+      }
       
       existing.env = { ...(existing.env || {}), ...dynamicEnv };
       

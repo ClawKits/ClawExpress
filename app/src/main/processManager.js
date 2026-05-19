@@ -284,6 +284,8 @@ async function spawnPlatform(platformId, config, webContents) {
     // ── Post-start hooks ────────────────────────────────────────
     if (useOC) {
       openclawRunner.startPairingWatcher(platformId, child);
+      openclawRunner.scheduleDoctorFix(config, containerName, sendLog);   // 10s: fix schema issues after upgrade
+      openclawRunner.scheduleDeviceAutoApprove(config, containerName, child, sendLog);  // 15s+: auto-approve browser pairing
       openclawRunner.scheduleModelApply(config, containerName, sendLog);  // 20s: apply chosen model
     } else if (runner === openfangRunner && typeof openfangRunner.scheduleVersionCheck === 'function') {
       const win = BrowserWindow.getAllWindows()[0];
@@ -369,17 +371,24 @@ async function stopPlatform(platformId, webContents, method, container, registry
         );
         const containerId = (idResult.stdout || '').trim() || containerName;
 
-        // 2. Stop.
+        // 2. Stop — use a short grace period since OpenClaw shuts down quickly.
         sendProgress({ step: 'stop', status: 'running', msg: 'Stopping container...' });
-        await runDockerAsync(['stop', '--time', '8', containerId], 15000);
+        await runDockerAsync(['stop', '--time', isOpenfang ? '8' : '3', containerId], isOpenfang ? 15000 : 8000);
         sendProgress({ step: 'stop', status: 'done', msg: 'Container stopped' });
 
         // 3. Commit (save installed packages into image for next start).
+        //    Only needed for platforms that install runtime deps inside the
+        //    container (e.g. OpenFang + pip packages).  OpenClaw persists all
+        //    state via volume mounts, so commit is a waste of 30-120s.
         const savedImage = isOpenfang ? 'openfang-custom:latest' : `clawexpress-${registryId || platformId}:saved`;
-        sendProgress({ step: 'commit', status: 'running', msg: `Saving state → ${savedImage}` });
-        sendLog(`[SYSTEM] Committing container state: ${savedImage}`);
-        await runDockerAsync(['commit', containerId, savedImage], 120000);
-        sendProgress({ step: 'commit', status: 'done', msg: 'State saved' });
+        if (isOpenfang) {
+          sendProgress({ step: 'commit', status: 'running', msg: `Saving state → ${savedImage}` });
+          sendLog(`[SYSTEM] Committing container state: ${savedImage}`);
+          await runDockerAsync(['commit', containerId, savedImage], 120000);
+          sendProgress({ step: 'commit', status: 'done', msg: 'State saved' });
+        } else {
+          sendProgress({ step: 'commit', status: 'done', msg: 'Skipped (state is volume-mounted)' });
+        }
 
         // 4. Remove — container disappears from Docker Desktop here.
         sendProgress({ step: 'remove', status: 'running', msg: 'Removing container...' });

@@ -226,6 +226,21 @@ function registerOpenclawUpdaterHandlers() {
                });
            } catch(e) {}
            
+           // Invalidate any previously committed saved image so the next
+           // start uses the fresh upstream image, not a stale overlay.
+           try {
+             sendLog('[SYSTEM] Clearing saved container state (if any)...');
+             await new Promise((resolve) => {
+               const rmiProc = spawn('docker', ['rmi', '-f', 'clawexpress-openclaw:saved'], {
+                 stdio: ['ignore', 'pipe', 'pipe'],
+                 env: envWithPath,
+                 windowsHide: true
+               });
+               rmiProc.on('close', () => resolve());
+               rmiProc.on('error', () => resolve());
+             });
+           } catch(e) {}
+           
            return { success: true, versionInstalled: targetVersion };
          } catch (err) {
            sendLog(`[ERROR] Docker pull failed: ${err.message}`);
