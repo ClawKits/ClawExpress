@@ -206,7 +206,7 @@ const InstalledPage = ({ onNavigate, setLogTarget, setConfigTarget }) => {
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '24px' }}>
-          {platforms.map(platform => {
+          {[...platforms].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(platform => {
             const statusColors = getStatusColor(platform.status);
             const upState = updateStates[platform.id] || {};
             const isUpdating = upState.status === 'updating';

@@ -414,6 +414,26 @@ ipcMain.handle('open-url', (event, { url }) => {
   return { success: false, reason: 'Invalid URL' };
 });
 
+ipcMain.handle('open-folder', (event, { path: folderPath }) => {
+  if (folderPath) {
+    let resolvedPath = folderPath;
+    if (resolvedPath.startsWith('~') && (resolvedPath[1] === '/' || resolvedPath[1] === '\\')) {
+      resolvedPath = path.join(require('os').homedir(), resolvedPath.slice(2));
+    }
+    
+    if (!fs.existsSync(resolvedPath)) {
+      try {
+        fs.mkdirSync(resolvedPath, { recursive: true });
+      } catch (e) {
+        return { success: false, reason: 'Failed to create folder: ' + e.message };
+      }
+    }
+    shell.openPath(resolvedPath);
+    return { success: true };
+  }
+  return { success: false, reason: 'No path provided' };
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Core IPC — Settings Persistence
 // ─────────────────────────────────────────────────────────────────────────────

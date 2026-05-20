@@ -383,7 +383,7 @@ const Dashboard = ({ onNavigate }) => {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {platforms.map(p => (
+                {[...platforms].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(p => (
                   <PlatformCard
                     key={p.id}
                     platform={{ ...p, channels: platformChannels[p.id] || p.channels || {} }}

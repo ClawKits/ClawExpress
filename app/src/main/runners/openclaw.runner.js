@@ -371,10 +371,15 @@ function prepareDockerScript(scriptArr, config, containerName) {
     else scriptArr.push(targetImage);
   }
 
-  // Ensure --name
+  // Ensure --name and -u root
   const runIdx = scriptArr.indexOf('run');
-  if (runIdx !== -1 && !scriptArr.includes('--name')) {
-    scriptArr.splice(runIdx + 1, 0, '--name', containerName);
+  if (runIdx !== -1) {
+    if (!scriptArr.includes('--name')) {
+      scriptArr.splice(runIdx + 1, 0, '--name', containerName);
+    }
+    if (!scriptArr.includes('-u') && !scriptArr.includes('--user')) {
+      scriptArr.splice(runIdx + 1, 0, '-u', 'root');
+    }
   }
 
   // Replace / inject .openclaw mount
@@ -386,7 +391,6 @@ function prepareDockerScript(scriptArr, config, containerName) {
   const finalRunIdx = scriptArr.lastIndexOf('run');
   scriptArr.splice(finalRunIdx + 1, 0, 
     '-v', `${openclawDir}:/home/node/.openclaw`,
-    '--tmpfs', '/home/node/.openclaw/canvas:uid=1000,gid=1000,exec',
     '--tmpfs', '/home/node/.openclaw/agents:uid=1000,gid=1000,exec',
     '-v', 'openclaw-plugins-cache:/home/node/.openclaw/plugin-runtime-deps'
   );
@@ -399,6 +403,7 @@ function prepareDockerScript(scriptArr, config, containerName) {
 
   if (!scriptArr.includes('OPENCLAW_GATEWAY_BIND=lan')) scriptArr.splice(injectIdx, 0, '-e', 'OPENCLAW_GATEWAY_BIND=lan');
   if (!scriptArr.includes('HOST=0.0.0.0'))              scriptArr.splice(injectIdx, 0, '-e', 'HOST=0.0.0.0');
+  scriptArr.splice(injectIdx, 0, '-e', 'HOME=/home/node', '-e', 'OPENCLAW_DIR=/home/node/.openclaw');
 
   // Inject the auth token via env var so the gateway accepts connections.
   // New OpenClaw versions (2026+) refuse to bind to lan without auth.

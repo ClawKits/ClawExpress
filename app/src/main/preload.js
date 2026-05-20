@@ -10,7 +10,7 @@ const VALID_CHANNELS = [
   // Debug Logging
   'get-logs', 'open-log-file',
   // Utils
-  'open-url', 'write-platform-config', 'read-platform-config', 'verify-api-key', 'register-model-alias', 'fetch-models', 'read-gateway-models', 'test-model-chat',
+  'open-url', 'open-folder', 'write-platform-config', 'read-platform-config', 'verify-api-key', 'register-model-alias', 'fetch-models', 'read-gateway-models', 'test-model-chat',
   'read-raw-config', 'write-raw-config', 'get-config-history', 'restore-config-history',
   // OAuth
   'oauth-start', 'oauth-exchange',

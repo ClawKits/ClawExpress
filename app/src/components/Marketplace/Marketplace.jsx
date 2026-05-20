@@ -38,8 +38,8 @@ const Marketplace = ({ onNavigate }) => {
     setIsInstallOpen(true);
   };
 
-  const verified = marketplace.filter(p => p.verified);
-  const community = marketplace.filter(p => !p.verified);
+  const verified = marketplace.filter(p => p.verified).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const community = marketplace.filter(p => !p.verified).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
   return (
     <div className={styles.page}>

@@ -2,6 +2,7 @@ services:
   # Hermes Agent Gateway — core API on port 8642 + Dashboard on port 9119
   hermes-agent:
     image: nousresearch/hermes-agent:latest
+    user: root
     env_file:
       - .env
     environment:
@@ -26,7 +27,9 @@ services:
         "/opt/hermes/.venv/bin/hermes dashboard --host 0.0.0.0 --port 9119 --no-open --insecure >/tmp/hermes-dashboard.log 2>&1 & exec /opt/hermes/.venv/bin/hermes gateway run"
       ]
     volumes:
-      - claude-data:/opt/data
+      - hermes-data:/opt/data
+      # Bind-mount only the workspace subdirectory so user can access output files
+      - ~/.hermes/workspace:/opt/data/workspace
       # Inject ClawExpress-managed model config (provider, model, base_url).
       # Bind mount takes precedence over the volume for this specific file.
       - ./config.yaml:/opt/data/config.yaml
@@ -42,6 +45,7 @@ services:
   # Hermes Workspace UI — web interface on port 3000
   hermes-workspace:
     image: ghcr.io/outsourc-e/hermes-workspace:latest
+    user: root
     depends_on:
       hermes-agent:
         condition: service_healthy
@@ -61,14 +65,9 @@ services:
       COOKIE_SECURE: '0'
       TRUST_PROXY: '1'
     volumes:
-      - hermes-data:/home/workspace
-      # Dedicated volume so Docker initialises /home/workspace/.hermes with
-      # correct permissions — pty-helper.py os.chdir()s into this path.
-      - hermes-home:/home/workspace/.hermes
+      - ~/.hermes/workspace:/home/workspace
     ports:
       - '127.0.0.1:3000:3000'
 
 volumes:
-  claude-data:
   hermes-data:
-  hermes-home:

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Plus, Trash2, RotateCw, Download, Upload } from 'lucide-react';
+import { Plus, Trash2, RotateCw, Download, Upload, FolderOpen } from 'lucide-react';
 import { usePlatformStore } from '../../store/usePlatformStore';
 import { PROVIDERS } from '../../constants/providers';
 import { toast } from '../Toast/Toast';
@@ -88,6 +88,26 @@ const GeneralTab = ({
     } finally {
       setImporting(false);
     }
+  };
+
+  const handleOpenWorkspace = () => {
+    if (!platform.cwd) {
+      toast.warn('No workspace directory configured for this platform.');
+      return;
+    }
+    const pid = platform.registryId || platform.id;
+    const isOC = pid.includes('openclaw');
+    const isHermes = pid.includes('hermes');
+    
+    // OpenClaw places AI files inside `~/.openclaw/workspace`.
+    // Hermes Agent saves output files to `/opt/data/workspace/` → mapped to `~/.hermes/workspace`.
+    const targetPath = isOC ? '~/.openclaw/workspace' : (isHermes ? '~/.hermes/workspace' : platform.cwd);
+    
+    window.electron?.ipcRenderer.invoke('open-folder', { path: targetPath }).then(res => {
+      if (!res?.success) toast.error('Could not open workspace folder: ' + res?.reason);
+    }).catch(err => {
+      toast.error('Failed to open folder: ' + err.message);
+    });
   };
 
   return (
@@ -351,6 +371,21 @@ const GeneralTab = ({
           onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = importing ? 'var(--text-muted)' : 'var(--text-secondary)'; }}
         >
           <Upload size={12} /> {importing ? 'Importing…' : 'Import Config'}
+        </button>
+
+        <button
+          onClick={handleOpenWorkspace}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '6px',
+            background: 'transparent', border: '1px solid var(--border)',
+            color: 'var(--text-secondary)', padding: '6px 12px', borderRadius: '5px',
+            cursor: 'pointer', fontSize: '12px', fontFamily: 'var(--font-primary)',
+            transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--border-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+        >
+          <FolderOpen size={12} color="#eab308" /> Open Workspace
         </button>
       </div>
       <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px', display: 'block', lineHeight: '1.4' }}>
